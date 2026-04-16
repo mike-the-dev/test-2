@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, CloseButton, Input } from "@heroui/react";
+import { Avatar, Button, Input } from "@heroui/react";
 import {
   useCallback,
   useEffect,
@@ -30,6 +30,46 @@ function postCloseToParent(): void {
   }
 }
 
+function SendIcon(): ReactElement {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M22 2L11 13" />
+      <path d="M22 2l-7 20-4-9-9-4 20-7z" />
+    </svg>
+  );
+}
+
+function CloseIcon(): ReactElement {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M18 6L6 18" />
+      <path d="M6 6l12 12" />
+    </svg>
+  );
+}
+
 export function ChatPanel({ session }: ChatPanelProps): ReactElement {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState<string>("");
@@ -38,12 +78,16 @@ export function ChatPanel({ session }: ChatPanelProps): ReactElement {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
 
-  // Focus the input on mount so the visitor can start typing immediately.
+  // Focus the input on mount AND whenever a send finishes. Running this in an
+  // effect (rather than inline after ``setIsSending(false)``) guarantees the
+  // focus call lands AFTER React has dropped the ``disabled`` attribute —
+  // focusing a disabled input is a silent no-op.
   useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+    if (!isSending) {
+      inputRef.current?.focus();
+    }
+  }, [isSending]);
 
-  // Esc anywhere inside the panel closes the widget.
   useEffect(() => {
     const handler = (e: globalThis.KeyboardEvent): void => {
       if (e.key === "Escape") {
@@ -54,7 +98,6 @@ export function ChatPanel({ session }: ChatPanelProps): ReactElement {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // Autoscroll the log to the bottom when new messages arrive.
   useEffect(() => {
     if (logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -105,8 +148,7 @@ export function ChatPanel({ session }: ChatPanelProps): ReactElement {
           )
         );
       } catch (err) {
-        const status =
-          err instanceof ChatApiError ? err.status : "network";
+        const status = err instanceof ChatApiError ? err.status : "network";
         console.error("[instapaytient] send failed", {
           sessionUlid: session.sessionUlid,
           status,
@@ -126,8 +168,6 @@ export function ChatPanel({ session }: ChatPanelProps): ReactElement {
         );
       } finally {
         setIsSending(false);
-        // Return focus to the input so the visitor can keep typing.
-        inputRef.current?.focus();
       }
     },
     [isSending, session.sessionUlid]
@@ -149,13 +189,32 @@ export function ChatPanel({ session }: ChatPanelProps): ReactElement {
     setDraft(e.target.value);
   };
 
+  const canSend = !isSending && draft.trim().length > 0;
+
   return (
-    <div className="flex flex-col h-full bg-background">
-      <header className="flex items-center justify-between border-b border-default-200 px-4 py-3">
-        <h1 className="text-base font-semibold text-foreground">
-          {session.displayName}
-        </h1>
-        <CloseButton aria-label="Close chat" onPress={postCloseToParent} />
+    <div className="flex flex-col flex-1 min-h-0 w-full bg-background overflow-hidden">
+      <header className="flex items-center justify-between bg-accent px-3 py-3 shrink-0">
+        <div className="flex items-center gap-2">
+          <Avatar size="sm" className="shrink-0">
+            <Avatar.Fallback className="bg-white text-accent">
+              AI
+            </Avatar.Fallback>
+          </Avatar>
+          <div className="leading-tight">
+            <h3 className="text-sm font-medium text-accent-foreground">
+              {session.displayName}
+            </h3>
+            <p className="text-xs text-accent-foreground/80">Online</p>
+          </div>
+        </div>
+        <button
+          type="button"
+          aria-label="Close chat"
+          onClick={postCloseToParent}
+          className="inline-flex items-center justify-center rounded-full h-8 w-8 text-accent-foreground hover:bg-white/20 transition-colors"
+        >
+          <CloseIcon />
+        </button>
       </header>
 
       <div
@@ -164,12 +223,19 @@ export function ChatPanel({ session }: ChatPanelProps): ReactElement {
         aria-live="polite"
         aria-label="Conversation"
         data-testid="chat-log"
-        className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3"
+        className="flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-4 bg-background"
       >
         {messages.length === 0 ? (
-          <p className="text-sm text-default-500">
-            Ask me about products, pricing, or start a new cart.
-          </p>
+          <div className="flex items-start gap-2">
+            <Avatar size="sm" className="mt-1 shrink-0">
+              <Avatar.Fallback className="bg-accent text-accent-foreground">
+                AI
+              </Avatar.Fallback>
+            </Avatar>
+            <div className="rounded-2xl rounded-tl-none bg-surface-secondary px-3 py-2 text-sm text-foreground max-w-[80%]">
+              Hi! Ask me about products, pricing, or start a new cart.
+            </div>
+          </div>
         ) : null}
         {messages.map((m) => (
           <ChatMessageView key={m.id} message={m} />
@@ -178,26 +244,29 @@ export function ChatPanel({ session }: ChatPanelProps): ReactElement {
 
       <form
         onSubmit={onSubmit}
-        className="flex items-center gap-2 border-t border-default-200 px-3 py-3"
+        className="flex items-center gap-2 border-t border-default bg-surface-secondary px-3 py-3 shrink-0"
       >
         <Input
           ref={inputRef}
           aria-label="Type your message"
-          placeholder="Type a message..."
+          placeholder="Type your message..."
           value={draft}
           onChange={onChange}
           onKeyDown={onKeyDown}
           disabled={isSending}
           fullWidth
-          className="flex-1"
+          className="flex-1 rounded-lg border border-default bg-background px-3 py-2 text-sm outline-none focus:border-primary"
         />
         <Button
           type="submit"
           variant="primary"
-          isDisabled={isSending || draft.trim().length === 0}
+          isIconOnly
+          isDisabled={!canSend}
           isPending={isSending}
+          aria-label="Send message"
+          className="rounded-full h-9 w-9 shrink-0"
         >
-          Send
+          <SendIcon />
         </Button>
       </form>
     </div>

@@ -94,7 +94,7 @@ function EmbedBody(): ReactElement {
   if (state.status === "loading") {
     return (
       <div
-        className="flex h-full w-full items-center justify-center"
+        className="flex flex-1 w-full items-center justify-center"
         data-testid="embed-loading"
       >
         <Spinner size="lg" color="accent" />
@@ -104,7 +104,7 @@ function EmbedBody(): ReactElement {
 
   if (state.status === "error") {
     return (
-      <div className="flex h-full w-full items-center justify-center p-6">
+      <div className="flex flex-1 w-full items-center justify-center p-6">
         <ChatErrorCard message={state.message} onRetry={retry} />
       </div>
     );
@@ -117,7 +117,7 @@ export default function EmbedPage(): ReactElement {
   return (
     <Suspense
       fallback={
-        <div className="flex h-full w-full items-center justify-center">
+        <div className="flex flex-1 w-full items-center justify-center">
           <Spinner size="lg" color="accent" />
         </div>
       }
