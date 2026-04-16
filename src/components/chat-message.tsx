@@ -64,7 +64,7 @@ export function ChatMessageView({ message }: ChatMessageProps): ReactElement {
               <span>Thinking...</span>
             </span>
           ) : (
-            <div className="prose prose-sm max-w-none dark:prose-invert">
+            <div className="prose prose-sm max-w-none prose-headings:text-foreground prose-strong:text-foreground prose-a:text-accent">
               <SafeMarkdown content={message.content} />
             </div>
           )}

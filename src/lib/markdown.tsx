@@ -3,18 +3,35 @@
 import type { AnchorHTMLAttributes, ReactElement } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import remarkGfm from "remark-gfm";
 
 /**
- * Narrow sanitization schema: only the inline elements we use to render chat
- * replies. No raw HTML, no headings, no images, no block quotes, no lists --
- * the agent output is conversational prose.
+ * Sanitization schema for assistant replies. Permits the structured text the
+ * backend emits (paragraphs, numbered/unordered lists with nesting, bold,
+ * italic, strikethrough, inline code and fenced code blocks, links) while
+ * continuing to strip raw HTML, scripts, styles, iframes, event handler
+ * attributes, and non-http URL schemes.
  */
 const CHAT_SCHEMA = {
   ...defaultSchema,
-  tagNames: ["p", "strong", "em", "code", "a", "br"],
+  tagNames: [
+    "p",
+    "br",
+    "strong",
+    "em",
+    "del",
+    "s",
+    "ul",
+    "ol",
+    "li",
+    "code",
+    "pre",
+    "a",
+  ],
   attributes: {
     a: ["href"],
     code: [],
+    pre: [],
     span: [],
   },
   protocols: {
@@ -74,8 +91,9 @@ export interface SafeMarkdownProps {
 export function SafeMarkdown({ content }: SafeMarkdownProps): ReactElement {
   return (
     <ReactMarkdown
-      // Disallow raw HTML by only enabling inline Markdown. We pass a
-      // rehype-sanitize pass as belt-and-suspenders.
+      // remark-gfm adds strikethrough, tables, and task lists to the parser.
+      // rehype-sanitize stays wired as belt-and-suspenders for XSS defense.
+      remarkPlugins={[remarkGfm]}
       rehypePlugins={[[rehypeSanitize, CHAT_SCHEMA]]}
       components={components}
       skipHtml
