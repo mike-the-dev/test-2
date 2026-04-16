@@ -106,12 +106,18 @@ export const WIDGET_SOURCE = String.raw`(function () {
     bubble.style.borderRadius = "9999px";
     bubble.style.border = "none";
     bubble.style.cursor = "pointer";
-    bubble.style.background = "#111827";
+    bubble.style.background = "#006FEE";
     bubble.style.color = "#ffffff";
-    bubble.style.boxShadow = "0 10px 25px rgba(0,0,0,0.25)";
-    bubble.style.transition = "transform 150ms ease";
+    bubble.style.boxShadow = "0 10px 25px rgba(0, 111, 238, 0.35)";
+    bubble.style.transition = "transform 150ms ease, background 150ms ease";
     bubble.innerHTML =
-      '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+      '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>';
+    bubble.addEventListener("mouseenter", function () {
+      bubble.style.transform = "scale(1.05)";
+    });
+    bubble.addEventListener("mouseleave", function () {
+      bubble.style.transform = "scale(1)";
+    });
 
     // --- Iframe element. ---------------------------------------------------
     var iframe = null;
@@ -120,21 +126,26 @@ export const WIDGET_SOURCE = String.raw`(function () {
 
     function sizeIframe() {
       if (!iframe) return;
+      // Reset any previous inset values first. The inset property is a
+      // shorthand for top/right/bottom/left, so setting it to "" wipes all
+      // four; setting the longhands after is what finalizes the position.
+      iframe.style.inset = "";
+      iframe.style.position = "fixed";
       if (window.innerWidth < 480) {
-        iframe.style.position = "fixed";
-        iframe.style.inset = "0";
-        iframe.style.width = "100vw";
-        iframe.style.height = "100vh";
+        iframe.style.top = "0";
         iframe.style.right = "0";
         iframe.style.bottom = "0";
+        iframe.style.left = "0";
+        iframe.style.width = "100vw";
+        iframe.style.height = "100vh";
         iframe.style.borderRadius = "0";
       } else {
-        iframe.style.position = "fixed";
+        iframe.style.top = "";
+        iframe.style.left = "";
         iframe.style.right = "16px";
         iframe.style.bottom = "88px";
         iframe.style.width = "380px";
         iframe.style.height = "620px";
-        iframe.style.inset = "";
         iframe.style.borderRadius = "16px";
       }
     }

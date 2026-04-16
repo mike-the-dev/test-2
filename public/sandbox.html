@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Widget sandbox</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 0;
+        padding: 40px;
+        background: #f4f4f5;
+        min-height: 100vh;
+      }
+      h1 {
+        margin-top: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Instapaytient widget sandbox</h1>
+    <p>This page simulates a practice site embedding the chat bubble.</p>
+    <script>
+      var s = document.createElement('script');
+      s.src = '/widget.js?v=' + Date.now();
+      s.async = true;
+      document.head.appendChild(s);
+    </script>
+  </body>
+</html>
