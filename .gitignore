@@ -43,3 +43,10 @@ next-env.d.ts
 
 # claude code local agent state (per-machine, not for version control)
 .claude/
+
+# playwright MCP artifacts (screenshots, console dumps, snapshots)
+.playwright-mcp/
+sandbox-*.png
+
+# transient hero-ui reference project (checked in locally during M3 UI refactor)
+.hero-project-chat-ui/
