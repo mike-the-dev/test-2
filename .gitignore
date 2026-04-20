@@ -44,10 +44,12 @@ next-env.d.ts
 # claude code local agent state (per-machine, not for version control)
 .claude/
 
-# playwright MCP artifacts (screenshots, console dumps, snapshots)
+# playwright MCP artifacts (screenshots, console dumps, snapshots).
+# Future screenshots should be written under .playwright-mcp/ or /tmp/ so
+# they stay out of the repo-root file tree entirely; the anchored /*.png
+# rule below is belt-and-suspenders for anything that slips through.
 .playwright-mcp/
-sandbox-*.png
-splash-*.png
+/*.png
 
 # transient hero-ui reference project (checked in locally during M3 UI refactor)
 .hero-project-chat-ui/
