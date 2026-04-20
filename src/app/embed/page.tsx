@@ -11,6 +11,7 @@ import {
   type ReactElement,
 } from "react";
 
+import { BudgetSplash } from "@/components/budget-splash";
 import { ChatErrorCard } from "@/components/chat-error-card";
 import { ChatPanel } from "@/components/chat-panel";
 import { ChatApiError, createSession } from "@/lib/api";
@@ -32,6 +33,7 @@ function EmbedBody(): ReactElement {
 
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [attempt, setAttempt] = useState<number>(0);
+  const [budgetDollars, setBudgetDollars] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -110,7 +112,17 @@ function EmbedBody(): ReactElement {
     );
   }
 
-  return <ChatPanel session={state.session} />;
+  if (budgetDollars === null) {
+    return <BudgetSplash onSubmit={setBudgetDollars} />;
+  }
+
+  const initialMessage = `Hi! My budget is about $${budgetDollars.toLocaleString(
+    "en-US"
+  )}. Can you help me find options that fit?`;
+
+  return (
+    <ChatPanel session={state.session} initialUserMessage={initialMessage} />
+  );
 }
 
 export default function EmbedPage(): ReactElement {

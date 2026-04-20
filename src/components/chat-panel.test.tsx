@@ -84,6 +84,28 @@ describe("ChatPanel", () => {
     });
   });
 
+  it("auto-sends the initialUserMessage once on mount", async () => {
+    sendMessageSpy.mockResolvedValue({ reply: "Great, here are some options!" });
+
+    render(
+      <ChatPanel
+        session={session}
+        initialUserMessage="Hi! My budget is about $500."
+      />
+    );
+
+    await waitFor(() => {
+      expect(sendMessageSpy).toHaveBeenCalledWith({
+        sessionUlid: session.sessionUlid,
+        message: "Hi! My budget is about $500.",
+      });
+    });
+    expect(sendMessageSpy).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("chat-message-user")).toHaveTextContent(
+      /my budget is about \$500/i
+    );
+  });
+
   it("posts a close message to window.parent when Escape is pressed", async () => {
     const postMessageSpy = vi.fn();
     // `window.parent === window` in jsdom, so replace it with a harness.

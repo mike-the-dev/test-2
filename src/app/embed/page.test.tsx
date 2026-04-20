@@ -13,6 +13,11 @@ import {
 import EmbedPage from "@/app/embed/page";
 import * as api from "@/lib/api";
 
+vi.mock("@/lib/affirm", () => ({
+  loadAffirmSdk: vi.fn(),
+  refreshAffirmUi: vi.fn(),
+}));
+
 // Route the Next navigation hook to a simple in-memory store.
 const currentParams = new URLSearchParams();
 vi.mock("next/navigation", () => ({
@@ -30,7 +35,7 @@ describe("EmbedPage", () => {
     vi.restoreAllMocks();
   });
 
-  it("creates a session with URL query params and renders the ChatPanel on success", async () => {
+  it("creates a session with URL query params and renders the budget splash first", async () => {
     currentParams.set("guestId", "01HGUEST0000000000000000000");
     currentParams.set("agent", "shopping_assistant");
     createSessionSpy.mockResolvedValue({
@@ -41,9 +46,7 @@ describe("EmbedPage", () => {
     render(<EmbedPage />);
 
     await waitFor(() => {
-      expect(
-        screen.getByRole("heading", { name: /shopping assistant/i })
-      ).toBeInTheDocument();
+      expect(screen.getByTestId("budget-splash")).toBeInTheDocument();
     });
     expect(createSessionSpy).toHaveBeenCalledWith(
       {
