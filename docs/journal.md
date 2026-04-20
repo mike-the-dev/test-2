@@ -36,6 +36,33 @@ At the end of a working session — or after shipping a meaningful milestone —
 
 ---
 
+## 2026-04-19 — Budget-first splash + Sonnet caching savings validated
+
+**Goal:** put a pre-chat screen in front of the agent that captures a visitor budget, shows live Affirm messaging plus client-side 0% APR example payments, and forwards the amount to the agent as an opening message. Also: verify the backend caching work on Sonnet produces real cost savings under a representative three-turn conversation.
+
+**What changed:**
+- New `/embed` state machine: splash first, then chat. Submitting the splash flips state and fires an auto-send of `"Hi! My budget is about $X. Can you help me find options that fit?"` so the agent's first reply is tailored to the budget.
+- Budget splash UI (`src/components/budget-splash.tsx`) built on HeroUI v3: branded header, `$`-prefixed input defaulted to `$1,000`, `$50` minimum validation, and a disabled Start chat until valid.
+- Live Affirm promotional messaging wired through the official SDK bootstrap (`src/lib/affirm.ts` + `src/types/affirm.d.ts`). The `<p class="affirm-as-low-as">` element rerenders on every debounced amount change via `refreshAffirmUi()`.
+- Client-side example payments (`src/components/payment-estimates.tsx` + `src/lib/payment-estimator.ts`): three term cards at 6 / 12 / 24 months, pure `amount / months` math, rendered with `0% APR` chips and an honest "example payments" disclaimer.
+- Soft ceiling at `$30,000`: above it, the Affirm element and payment cards hide and the splash shows a short note pointing the visitor into chat for larger amounts. Start chat stays enabled — the agent can still help.
+- A single 400ms `useDebounce` clock lifted to `BudgetSplash` drives both the Affirm refresh and the payment-card math in lockstep; sub-components consume an already-debounced amount.
+- Backend Sonnet caching validated end-to-end via Playwright MCP: fresh guest + three back-and-forths, compared head-to-head against the uncached run. Anthropic provider dashboard reported **~54% cost reduction** with no frontend changes required.
+
+**Decisions worth remembering:**
+- **Keep the Affirm promo line AND our own payment math side-by-side** instead of picking one: Affirm's element satisfies the disclosure requirement and shows "As low as $X/mo" when the merchant has configured APR tiers; our client-side cards give honest, concrete numbers today and will keep working regardless of Affirm's server-side state.
+- **Hardcode the $30k ceiling as a plain constant** (`MAX_FINANCEABLE_DOLLARS` in `budget-splash.tsx`) instead of an env var. Tuning later is a one-line change, and wiring env plumbing now invites premature configuration. Value is empirical: Affirm's sandbox returns `"Amount provided is greater than maximum loan amount"` past $30,000.
+- **Use Next.js literal `process.env.NEXT_PUBLIC_X` reads, never dynamic indexing.** Lost 20 minutes to a refactor that routed env reads through a `readRequired(name)` helper; Next's client-side substitution only inlines the literal pattern, so the "refactored" version crashed the browser with `NEXT_PUBLIC_CHAT_API_URL is not set` despite the env being defined. Reverted and documented at the top of `env.ts`.
+- **Optional-call (`?.()`) the Affirm `refresh` method**, not just the lookup. The bootstrap IIFE installs a proxy on `window.affirm.ui` that exposes `ready` but not `refresh` until the CDN script finishes. `window.affirm?.ui?.refresh()` throws during that gap; `refresh?.()` silently no-ops, and the SDK auto-renders the initial state once it loads.
+- **Forward budget as an opening user message rather than via session metadata or a hidden prompt.** Keeps the backend contract untouched, makes the context transparent to the visitor, and lets the agent respond organically.
+
+**Next:**
+- Production Affirm public key + merchant-configured APR tiers will change the rendered promo line from "Pay over time with Affirm" to the real "As low as $X/mo" copy. No code change required — plug new key into env at deploy time.
+- Bundle-size sweep for `/embed` first-load JS (still ~181 KB gzipped vs <100 KB target) — potential wins in swapping `react-markdown` + `rehype-sanitize` for a narrower link-only renderer.
+- Widen end-to-end integration testing once the backend is stable; Playwright MCP flows against the sandbox host page proved their worth twice this milestone (off-screen iframe, splash states, cache-savings audit).
+
+---
+
 ## 2026-04-16 — M3 widget UI lands on HeroUI v3 reference design
 
 **Goal:** replace the placeholder ChatPanel visuals with the HeroUI-built reference UI the user shipped in `.hero-project-chat-ui/`, and fix the popup appearing off-screen when the bubble was clicked.
