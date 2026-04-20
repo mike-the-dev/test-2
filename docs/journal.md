@@ -36,6 +36,31 @@ At the end of a working session — or after shipping a meaningful milestone —
 
 ---
 
+## 2026-04-20 (late) — M4: server-side Referer authorization closes the snippet-theft vector
+
+**Goal:** stop an attacker from copying a legit customer's `<script data-account-ulid>` tag onto a hostile domain and mounting a fully-functional widget that bills to the legitimate customer. Until this landed, the only authentication flowing with the embed was a public ULID shipped in the snippet — trivially copyable.
+
+**What changed:**
+- `/embed` became an `async` Server Component. Reads `headers()` to get the browser-set `Referer`, parses the hostname (port stripped, lowercased), calls the backend's new `POST /chat/web/embed/authorize` with `{ accountUlid, parentDomain }`, and renders an `EmbedAuthorizationError` card unless the response says `authorized: true`.
+- Existing 5-state client machine moved unchanged into `embed-client.tsx`, now receiving `agent` / `guestId` / `accountUlid` as props instead of reading them via `useSearchParams`. The `Suspense` wrapper disappeared — server has the params synchronously.
+- New helpers: pure `parseRefererHostname` that never throws (guards `new URL()` + empty-string hostname for `about:blank` / `data:` / `file:` inputs), and a typed `authorizeEmbed` in `api.ts` that inherits the shared `ChatApiError` semantics via an extended `sendJson` that now accepts an optional `cache: "no-store"`.
+- Fail-closed discipline across seven failure modes (missing header, missing param, parse fail, fetch throw, non-2xx, 3s timeout via `AbortSignal.timeout(3000)`, malformed response, deny). Every path emits a structured `console.error` with `{ reason, parentDomain?, accountUlid? }` so denials are auditable in Next.js server logs without leaking URLs or bodies.
+- Error card copy is deliberately neutral — *"This site isn't authorized to embed this widget. Contact the site owner if you believe this is a mistake."* No retry button; denial is not end-user-retryable.
+
+**Decisions worth remembering:**
+- **Server-authoritative with no client bypass.** We discussed a localStorage "already-authorized" hint; said no. The server check is cheap (backend caches tuples in-memory) and the flash is sub-second. Every iframe load gets a fresh gate call.
+- **Frontend short-circuits obviously-invalid requests before touching the backend.** Missing Referer and missing `accountUlid` fail-closed client-side without calling the authorize endpoint. Confirmed by the backend logs: the only requests hitting `/embed/authorize` are ones that passed the two frontend guards, saving the backend the noise.
+- **`cache: "no-store"` is non-negotiable.** Without it, Next.js's fetch dedup/caching can sticky an authorize decision across requests. The happy-path test now asserts `expect(init.cache).toBe("no-store")` to pin the wire behavior against silent regression.
+- **Hostname normalization is a shared contract.** Frontend lowercases + port-strips via `new URL().hostname`; backend compares against the allowlist as-stored. The dev flow is "add `localhost` (no port, no scheme) to the `allowed_embed_origins` array on the account record." Cache-hit on the repeat call proves both sides produce identical tuples.
+- **Dead reason codes got pruned after review.** `DenyReason` was initially a 6-member union; two members (`parse_failed`, `malformed_response`) turned out to be subsumed by `authorize_failed` in practice. Removed — dead code in a security path is worse than no code; it invites future maintainers to assume deterministic behavior that doesn't exist.
+
+**Next:**
+- CSP `frame-ancestors` is still the second half of the defense-in-depth pair — a browser-level render gate that fires even if somehow the Next.js SSR authorize call leaks a false positive. Scheduled as a separate backend commit; frontend piece is a one-line middleware header write once the backend ships the allowlist-to-header logic.
+- Admin UI for `allowed_embed_origins` — populated manually in DynamoDB today; needs a real dashboard before onboarding the first production customer.
+- Playwright MCP hit a process-kill glitch mid-session; live-verify was done via `curl` (SSR HTML inspection) + backend log review + manual browser smoke test. All three agreed. MCP reload + a canonical Playwright E2E of the M4 flow is a low-priority polish for next session.
+
+---
+
 ## 2026-04-20 — Session contract goes server-authoritative: accountUlid validation + structured onboarding + history hydration
 
 **Goal:** close two gaps exposed during Playwright testing of the splash milestone — (a) the embed's account identity was a spoofable body field, and (b) every reopen of the widget re-ran the splash and re-sent the budget intro, bloating the conversation with redundant turns.
