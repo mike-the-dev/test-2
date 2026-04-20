@@ -72,3 +72,12 @@ export interface ChatHistoryMessage {
 export interface GetSessionMessagesResponse {
   messages: ChatHistoryMessage[];
 }
+
+export interface EmbedAuthorizeRequest {
+  accountUlid: string;
+  parentDomain: string;
+}
+
+export interface EmbedAuthorizeResponse {
+  authorized: boolean;
+}

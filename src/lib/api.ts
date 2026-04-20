@@ -2,6 +2,8 @@ import { chatApiUrl } from "@/lib/env";
 import type {
   CreateSessionRequest,
   CreateSessionResponse,
+  EmbedAuthorizeRequest,
+  EmbedAuthorizeResponse,
   GetSessionMessagesResponse,
   OnboardingRequest,
   OnboardingResponse,
@@ -30,24 +32,22 @@ export class ChatApiError extends Error {
   }
 }
 
-async function parseBody(response: Response): Promise<unknown> {
+const parseBody = async (response: Response): Promise<unknown> => {
   const text = await response.text();
-  if (text.length === 0) {
-    return null;
-  }
+  if (text.length === 0) return null;
   try {
     return JSON.parse(text) as unknown;
   } catch {
     return text;
   }
-}
+};
 
-async function sendJson<TResponse>(
+const sendJson = async <TResponse>(
   method: "GET" | "POST",
   path: string,
   body: unknown,
-  init?: { signal?: AbortSignal }
-): Promise<TResponse> {
+  init?: { signal?: AbortSignal; cache?: RequestCache }
+): Promise<TResponse> => {
   const url = `${chatApiUrl}${path}`;
 
   let response: Response;
@@ -60,6 +60,7 @@ async function sendJson<TResponse>(
           : undefined,
       body: method === "POST" ? JSON.stringify(body) : undefined,
       signal: init?.signal,
+      cache: init?.cache,
     });
   } catch (err) {
     // Network-level failure (DNS, CORS, offline, abort, ...). No HTTP status.
@@ -79,55 +80,78 @@ async function sendJson<TResponse>(
 
   const parsed = await parseBody(response);
   return parsed as TResponse;
-}
+};
 
-function postJson<TResponse>(
+const postJson = <TResponse>(
   path: string,
   body: unknown,
-  init?: { signal?: AbortSignal }
-): Promise<TResponse> {
-  return sendJson<TResponse>("POST", path, body, init);
-}
+  init?: { signal?: AbortSignal; cache?: RequestCache }
+): Promise<TResponse> => sendJson<TResponse>("POST", path, body, init);
 
-function getJson<TResponse>(
+const getJson = <TResponse>(
   path: string,
   init?: { signal?: AbortSignal }
-): Promise<TResponse> {
-  return sendJson<TResponse>("GET", path, undefined, init);
-}
+): Promise<TResponse> => sendJson<TResponse>("GET", path, undefined, init);
 
-export function createSession(
+export const createSession = (
   request: CreateSessionRequest,
   init?: { signal?: AbortSignal }
-): Promise<CreateSessionResponse> {
-  return postJson<CreateSessionResponse>("/chat/web/sessions", request, init);
-}
+): Promise<CreateSessionResponse> =>
+  postJson<CreateSessionResponse>("/chat/web/sessions", request, init);
 
-export function sendMessage(
+export const sendMessage = (
   request: SendMessageRequest,
   init?: { signal?: AbortSignal }
-): Promise<SendMessageResponse> {
-  return postJson<SendMessageResponse>("/chat/web/messages", request, init);
-}
+): Promise<SendMessageResponse> =>
+  postJson<SendMessageResponse>("/chat/web/messages", request, init);
 
-export function completeOnboarding(
+export const completeOnboarding = (
   sessionUlid: string,
   request: OnboardingRequest,
   init?: { signal?: AbortSignal }
-): Promise<OnboardingResponse> {
-  return postJson<OnboardingResponse>(
+): Promise<OnboardingResponse> =>
+  postJson<OnboardingResponse>(
     `/chat/web/sessions/${encodeURIComponent(sessionUlid)}/onboarding`,
     request,
     init
   );
-}
 
-export function fetchSessionMessages(
+export const fetchSessionMessages = (
   sessionUlid: string,
   init?: { signal?: AbortSignal }
-): Promise<GetSessionMessagesResponse> {
-  return getJson<GetSessionMessagesResponse>(
+): Promise<GetSessionMessagesResponse> =>
+  getJson<GetSessionMessagesResponse>(
     `/chat/web/sessions/${encodeURIComponent(sessionUlid)}/messages`,
     init
   );
-}
+
+/**
+ * @author mike-the-dev (Michael Camacho)
+ * @editor mike-the-dev (Michael Camacho)
+ * @lastUpdated 2026-04-20
+ * @name authorizeEmbed
+ * @description POSTs to the embed authorization endpoint to verify that the
+ *   given account is permitted to embed the widget from the specified parent
+ *   domain. Always uses `cache: "no-store"` to prevent Next.js fetch
+ *   deduplication or stale caching of the authorization decision.
+ *   Throws a `ChatApiError` on non-2xx responses or when the response body
+ *   does not contain a boolean `authorized` field.
+ * @param request - The account ULID and parent domain to authorize.
+ * @param init - Optional AbortSignal and cache override (default: "no-store").
+ * @returns A promise that resolves to `{ authorized: boolean }`.
+ */
+export const authorizeEmbed = async (
+  request: EmbedAuthorizeRequest,
+  init?: { signal?: AbortSignal; cache?: RequestCache }
+): Promise<EmbedAuthorizeResponse> => {
+  const result = await postJson<EmbedAuthorizeResponse>(
+    "/chat/web/embed/authorize",
+    request,
+    { signal: init?.signal, cache: init?.cache ?? "no-store" }
+  );
+
+  if (typeof result.authorized !== "boolean")
+    throw new ChatApiError("malformed authorize response", 200, result);
+
+  return result;
+};

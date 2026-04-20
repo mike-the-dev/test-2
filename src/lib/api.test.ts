@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ChatApiError,
+  authorizeEmbed,
   completeOnboarding,
   createSession,
   fetchSessionMessages,
@@ -261,5 +262,53 @@ describe("api client", () => {
     expect(err).toBeInstanceOf(ChatApiError);
     expect((err as ChatApiError).status).toBe(502);
     expect((err as ChatApiError).body).toBeNull();
+  });
+
+  it("authorizeEmbed posts to /chat/web/embed/authorize with correct URL, body, Content-Type header, and no-store cache on authorized: true", async () => {
+    mockFetchOnce({ ok: true, status: 200, body: { authorized: true } });
+
+    const result = await authorizeEmbed({
+      accountUlid: "A#01HACCOUNT0000000000000000",
+      parentDomain: "shop.example.com",
+    });
+
+    expect(result).toEqual({ authorized: true });
+
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://localhost:8081/chat/web/embed/authorize");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init.cache).toBe("no-store");
+    expect(JSON.parse(init.body as string)).toEqual({
+      accountUlid: "A#01HACCOUNT0000000000000000",
+      parentDomain: "shop.example.com",
+    });
+  });
+
+  it("authorizeEmbed throws ChatApiError on non-2xx response", async () => {
+    mockFetchOnce({ ok: false, status: 403, body: { error: "forbidden" } });
+
+    const err = await authorizeEmbed({
+      accountUlid: "A#01HACCOUNT0000000000000000",
+      parentDomain: "evil.com",
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ChatApiError);
+    expect((err as ChatApiError).status).toBe(403);
+  });
+
+  it("authorizeEmbed throws ChatApiError when response body lacks the authorized boolean", async () => {
+    mockFetchOnce({ ok: true, status: 200, body: { something: "else" } });
+
+    const err = await authorizeEmbed({
+      accountUlid: "A#01HACCOUNT0000000000000000",
+      parentDomain: "shop.example.com",
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ChatApiError);
+    expect((err as ChatApiError).status).toBe(200);
+    expect((err as ChatApiError).message).toBe("malformed authorize response");
   });
 });

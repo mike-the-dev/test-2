@@ -10,7 +10,7 @@ import {
   type MockInstance,
 } from "vitest";
 
-import EmbedPage from "@/app/embed/page";
+import { EmbedClient } from "@/app/embed/embed-client";
 import * as api from "@/lib/api";
 
 vi.mock("@/lib/affirm", () => ({
@@ -18,26 +18,16 @@ vi.mock("@/lib/affirm", () => ({
   refreshAffirmUi: vi.fn(),
 }));
 
-// Route the Next navigation hook to a simple in-memory store.
-const currentParams = new URLSearchParams();
-vi.mock("next/navigation", () => ({
-  useSearchParams: () => currentParams,
-}));
-
 const GUEST = "01HGUEST0000000000000000000";
 const ACCOUNT = "A#01HACCOUNT0000000000000000";
 const SESSION = "01HSESSION00000000000000000";
 
-describe("EmbedPage", () => {
+describe("EmbedClient", () => {
   let createSessionSpy: MockInstance<typeof api.createSession>;
   let completeOnboardingSpy: MockInstance<typeof api.completeOnboarding>;
   let fetchMessagesSpy: MockInstance<typeof api.fetchSessionMessages>;
 
   beforeEach(() => {
-    currentParams.forEach((_, key) => currentParams.delete(key));
-    currentParams.set("guestId", GUEST);
-    currentParams.set("agent", "shopping_assistant");
-    currentParams.set("accountUlid", ACCOUNT);
     createSessionSpy = vi.spyOn(api, "createSession");
     completeOnboardingSpy = vi.spyOn(api, "completeOnboarding");
     fetchMessagesSpy = vi.spyOn(api, "fetchSessionMessages");
@@ -54,7 +44,13 @@ describe("EmbedPage", () => {
       budgetCents: null,
     });
 
-    render(<EmbedPage />);
+    render(
+      <EmbedClient
+        agent="shopping_assistant"
+        guestId={GUEST}
+        accountUlid={ACCOUNT}
+      />
+    );
 
     await waitFor(() => {
       expect(screen.getByTestId("budget-splash")).toBeInTheDocument();
@@ -86,7 +82,13 @@ describe("EmbedPage", () => {
     });
 
     const user = userEvent.setup();
-    render(<EmbedPage />);
+    render(
+      <EmbedClient
+        agent="shopping_assistant"
+        guestId={GUEST}
+        accountUlid={ACCOUNT}
+      />
+    );
 
     await screen.findByTestId("budget-splash");
     // Default budget is $1,000 → 100_000 cents; just click Start chat.
@@ -132,7 +134,13 @@ describe("EmbedPage", () => {
       ],
     });
 
-    render(<EmbedPage />);
+    render(
+      <EmbedClient
+        agent="shopping_assistant"
+        guestId={GUEST}
+        accountUlid={ACCOUNT}
+      />
+    );
 
     await waitFor(() => {
       expect(screen.getByTestId("chat-message-user")).toHaveTextContent(
@@ -162,7 +170,13 @@ describe("EmbedPage", () => {
       new api.ChatApiError("history unavailable", 500, null)
     );
 
-    render(<EmbedPage />);
+    render(
+      <EmbedClient
+        agent="shopping_assistant"
+        guestId={GUEST}
+        accountUlid={ACCOUNT}
+      />
+    );
 
     await waitFor(() => {
       expect(
@@ -185,7 +199,13 @@ describe("EmbedPage", () => {
       });
 
     const user = userEvent.setup();
-    render(<EmbedPage />);
+    render(
+      <EmbedClient
+        agent="shopping_assistant"
+        guestId={GUEST}
+        accountUlid={ACCOUNT}
+      />
+    );
 
     const errorCard = await screen.findByTestId("chat-error-card");
     expect(errorCard).toBeInTheDocument();
