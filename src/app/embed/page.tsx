@@ -14,26 +14,61 @@ import {
 import { BudgetSplash } from "@/components/budget-splash";
 import { ChatErrorCard } from "@/components/chat-error-card";
 import { ChatPanel } from "@/components/chat-panel";
-import { ChatApiError, createSession } from "@/lib/api";
+import {
+  ChatApiError,
+  completeOnboarding,
+  createSession,
+  fetchSessionMessages,
+} from "@/lib/api";
 import { ensureGuestId } from "@/lib/guest-id";
-import type { SessionInfo } from "@/types/chat";
+import type { ChatMessage, SessionInfo } from "@/types/chat";
 
 const DEFAULT_AGENT = "shopping_assistant";
 
-type LoadState =
+/**
+ * Server-authoritative state machine for the embedded chat flow:
+ *
+ * - ``loading`` — waiting on the initial ``POST /chat/web/sessions`` round-trip.
+ * - ``splash`` — session is created but ``onboardingCompletedAt`` is null;
+ *   visitor needs to pick a budget before the agent has enough context.
+ * - ``hydrating`` — onboarded session found; fetching prior turns before
+ *   handing control to ``ChatPanel``.
+ * - ``chat`` — everything resolved, ``ChatPanel`` renders with any hydrated
+ *   history.
+ * - ``error`` — network / server failure at any step. Retryable.
+ */
+type EmbedState =
   | { status: "loading" }
-  | { status: "ready"; session: SessionInfo }
+  | { status: "splash"; session: SessionInfo }
+  | { status: "hydrating"; session: SessionInfo }
+  | {
+      status: "chat";
+      session: SessionInfo;
+      initialMessages: ChatMessage[];
+    }
   | { status: "error"; message: string };
+
+function messageFromApiError(err: unknown): string {
+  if (err instanceof ChatApiError) {
+    if (err.status === 0) {
+      return "We could not reach the chat service. Please try again.";
+    }
+    if (err.status >= 500) {
+      return "The chat service is temporarily unavailable. Please try again.";
+    }
+    return "We could not start a chat session. Please reload.";
+  }
+  return "Unexpected error starting chat.";
+}
 
 function EmbedBody(): ReactElement {
   const searchParams = useSearchParams();
   const agent = searchParams.get("agent") ?? DEFAULT_AGENT;
   const queryGuestId = searchParams.get("guestId");
-  const hostDomain = searchParams.get("hostDomain") ?? undefined;
+  const accountUlid = searchParams.get("accountUlid") ?? "";
 
-  const [state, setState] = useState<LoadState>({ status: "loading" });
+  const [state, setState] = useState<EmbedState>({ status: "loading" });
   const [attempt, setAttempt] = useState<number>(0);
-  const [budgetDollars, setBudgetDollars] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -60,40 +95,99 @@ function EmbedBody(): ReactElement {
     console.debug("[instapaytient] session create", { agent });
 
     createSession(
-      { agentName: agent, guestUlid, hostDomain },
+      { agentName: agent, guestUlid, accountUlid },
       { signal: controller.signal }
     )
-      .then((session) => {
+      .then(async (session) => {
         if (cancelled) return;
-        setState({ status: "ready", session });
+
+        // Returning visitor — hydrate prior turns before rendering the chat.
+        if (session.onboardingCompletedAt) {
+          setState({ status: "hydrating", session });
+          try {
+            const { messages } = await fetchSessionMessages(
+              session.sessionUlid,
+              { signal: controller.signal }
+            );
+            if (cancelled || controller.signal.aborted) return;
+            setState({
+              status: "chat",
+              session,
+              initialMessages: messages.map((m) => ({
+                id: m.id,
+                role: m.role,
+                content: m.content,
+              })),
+            });
+          } catch (err) {
+            if (cancelled || controller.signal.aborted) return;
+            // Hydration failure is not fatal — let the visitor continue
+            // with an empty log. Their backend context is still intact.
+            console.error("[instapaytient] history hydrate failed", {
+              status: err instanceof ChatApiError ? err.status : "unknown",
+            });
+            setState({ status: "chat", session, initialMessages: [] });
+          }
+          return;
+        }
+
+        // First-time visitor — splash for budget.
+        setState({ status: "splash", session });
       })
       .catch((err: unknown) => {
         if (cancelled || controller.signal.aborted) return;
-        const message =
-          err instanceof ChatApiError
-            ? err.status === 0
-              ? "We could not reach the chat service. Please try again."
-              : err.status >= 500
-                ? "The chat service is temporarily unavailable. Please try again."
-                : "We could not start a chat session. Please reload."
-            : "Unexpected error starting chat.";
         console.error("[instapaytient] session create failed", {
           status: err instanceof ChatApiError ? err.status : "unknown",
         });
-        setState({ status: "error", message });
+        setState({ status: "error", message: messageFromApiError(err) });
       });
 
     return () => {
       cancelled = true;
       controller.abort();
     };
-  }, [agent, queryGuestId, hostDomain, attempt]);
+  }, [agent, queryGuestId, accountUlid, attempt]);
 
   const retry = useCallback(() => {
     setAttempt((a) => a + 1);
   }, []);
 
-  if (state.status === "loading") {
+  const handleSplashSubmit = useCallback(
+    (budgetCents: number): void => {
+      if (state.status !== "splash") return;
+      const { session } = state;
+      const controller = new AbortController();
+      abortRef.current?.abort();
+      abortRef.current = controller;
+
+      setState({ status: "hydrating", session });
+
+      completeOnboarding(
+        session.sessionUlid,
+        { budgetCents },
+        { signal: controller.signal }
+      )
+        .then((updated) => {
+          if (controller.signal.aborted) return;
+          // Fresh onboarding — no prior turns to hydrate, go straight to chat.
+          setState({
+            status: "chat",
+            session: updated,
+            initialMessages: [],
+          });
+        })
+        .catch((err: unknown) => {
+          if (controller.signal.aborted) return;
+          console.error("[instapaytient] onboarding failed", {
+            status: err instanceof ChatApiError ? err.status : "unknown",
+          });
+          setState({ status: "error", message: messageFromApiError(err) });
+        });
+    },
+    [state]
+  );
+
+  if (state.status === "loading" || state.status === "hydrating") {
     return (
       <div
         className="flex flex-1 w-full items-center justify-center"
@@ -112,16 +206,15 @@ function EmbedBody(): ReactElement {
     );
   }
 
-  if (budgetDollars === null) {
-    return <BudgetSplash onSubmit={setBudgetDollars} />;
+  if (state.status === "splash") {
+    return <BudgetSplash onSubmit={handleSplashSubmit} />;
   }
 
-  const initialMessage = `Hi! My budget is about $${budgetDollars.toLocaleString(
-    "en-US"
-  )}. Can you help me find options that fit?`;
-
   return (
-    <ChatPanel session={state.session} initialUserMessage={initialMessage} />
+    <ChatPanel
+      session={state.session}
+      initialMessages={state.initialMessages}
+    />
   );
 }
 

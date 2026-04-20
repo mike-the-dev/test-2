@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ChatApiError, createSession, sendMessage } from "@/lib/api";
+import {
+  ChatApiError,
+  completeOnboarding,
+  createSession,
+  fetchSessionMessages,
+  sendMessage,
+} from "@/lib/api";
 
 function mockFetchOnce(response: {
   ok: boolean;
@@ -39,17 +45,25 @@ describe("api client", () => {
     mockFetchOnce({
       ok: true,
       status: 200,
-      body: { sessionUlid: "S1", displayName: "Shopping Assistant" },
+      body: {
+        sessionUlid: "S1",
+        displayName: "Shopping Assistant",
+        onboardingCompletedAt: null,
+        budgetCents: null,
+      },
     });
 
     const result = await createSession({
       agentName: "shopping_assistant",
       guestUlid: "G1",
+      accountUlid: "A#01HACCOUNT0000000000000000",
     });
 
     expect(result).toEqual({
       sessionUlid: "S1",
       displayName: "Shopping Assistant",
+      onboardingCompletedAt: null,
+      budgetCents: null,
     });
 
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
@@ -62,57 +76,109 @@ describe("api client", () => {
       JSON.stringify({
         agentName: "shopping_assistant",
         guestUlid: "G1",
+        accountUlid: "A#01HACCOUNT0000000000000000",
       })
     );
   });
 
-  it("createSession includes hostDomain in the body when provided and omits it otherwise", async () => {
+  it("createSession serializes accountUlid verbatim (no prefix stripping) in the body", async () => {
     mockFetchOnce({
       ok: true,
       status: 200,
-      body: { sessionUlid: "S1", displayName: "Shopping Assistant" },
+      body: {
+        sessionUlid: "S1",
+        displayName: "Shopping Assistant",
+        onboardingCompletedAt: null,
+        budgetCents: null,
+      },
     });
 
     await createSession({
       agentName: "shopping_assistant",
       guestUlid: "G1",
-      hostDomain: "practice.example.com",
+      accountUlid: "A#01K2XR5G6G22TB71SJCA823ESB",
     });
 
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-    const [, initWith] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(initWith.body as string)).toEqual({
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
       agentName: "shopping_assistant",
       guestUlid: "G1",
-      hostDomain: "practice.example.com",
+      accountUlid: "A#01K2XR5G6G22TB71SJCA823ESB",
     });
+  });
 
-    // Undefined hostDomain must not serialize into the body at all.
+  it("completeOnboarding posts to the session's onboarding endpoint with cents body and returns the updated session", async () => {
     mockFetchOnce({
       ok: true,
       status: 200,
-      body: { sessionUlid: "S2", displayName: "Shopping Assistant" },
+      body: {
+        sessionUlid: "S1",
+        displayName: "Shopping Assistant",
+        onboardingCompletedAt: "2026-04-20T12:00:00.000Z",
+        budgetCents: 150_000,
+      },
     });
 
-    await createSession({
-      agentName: "shopping_assistant",
-      guestUlid: "G1",
-      hostDomain: undefined,
+    const result = await completeOnboarding("01HSESSION0001", {
+      budgetCents: 150_000,
     });
 
-    const fetchMock2 = fetch as unknown as ReturnType<typeof vi.fn>;
-    const [, initWithout] = fetchMock2.mock.calls[0] as [string, RequestInit];
-    const parsed = JSON.parse(initWithout.body as string) as Record<
-      string,
-      unknown
-    >;
-    expect(parsed).toEqual({
-      agentName: "shopping_assistant",
-      guestUlid: "G1",
+    expect(result).toEqual({
+      sessionUlid: "S1",
+      displayName: "Shopping Assistant",
+      onboardingCompletedAt: "2026-04-20T12:00:00.000Z",
+      budgetCents: 150_000,
     });
-    expect(Object.prototype.hasOwnProperty.call(parsed, "hostDomain")).toBe(
-      false
+
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      "http://localhost:8081/chat/web/sessions/01HSESSION0001/onboarding"
     );
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe(JSON.stringify({ budgetCents: 150_000 }));
+  });
+
+  it("fetchSessionMessages GETs the session's messages endpoint and returns the filtered history", async () => {
+    mockFetchOnce({
+      ok: true,
+      status: 200,
+      body: {
+        messages: [
+          {
+            id: "01MSG0000000000000000000USR",
+            role: "user",
+            content: "hi",
+            timestamp: "2026-04-20T12:01:00.000Z",
+          },
+          {
+            id: "01MSG0000000000000000000AST",
+            role: "assistant",
+            content: "hello!",
+            timestamp: "2026-04-20T12:01:02.000Z",
+          },
+        ],
+      },
+    });
+
+    const result = await fetchSessionMessages("01HSESSION0001");
+
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[0]).toMatchObject({
+      role: "user",
+      content: "hi",
+    });
+
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      "http://localhost:8081/chat/web/sessions/01HSESSION0001/messages"
+    );
+    expect(init.method).toBe("GET");
+    // GET must NOT carry a Content-Type header or a body.
+    expect(init.headers).toBeUndefined();
+    expect(init.body).toBeUndefined();
   });
 
   it("sendMessage posts to /chat/web/messages with JSON body", async () => {
@@ -141,7 +207,11 @@ describe("api client", () => {
     });
 
     await expect(
-      createSession({ agentName: "shopping_assistant", guestUlid: "G1" })
+      createSession({
+        agentName: "shopping_assistant",
+        guestUlid: "G1",
+        accountUlid: "A#01HACCOUNT0000000000000000",
+      })
     ).rejects.toMatchObject({
       name: "ChatApiError",
       status: 400,
@@ -172,6 +242,7 @@ describe("api client", () => {
     const err = await createSession({
       agentName: "shopping_assistant",
       guestUlid: "G1",
+      accountUlid: "A#01HACCOUNT0000000000000000",
     }).catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(ChatApiError);

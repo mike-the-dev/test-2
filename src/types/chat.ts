@@ -13,16 +13,39 @@ export interface ChatMessage {
 export interface SessionInfo {
   sessionUlid: string;
   displayName: string;
+  /**
+   * ISO 8601 timestamp of when the visitor completed the budget splash, or
+   * `null` if they haven't yet. Truthy-coerce with `!!session.onboardingCompletedAt`
+   * when you want a boolean.
+   */
+  onboardingCompletedAt: string | null;
+  /**
+   * Visitor's captured budget in integer cents (e.g. 100_000 for $1,000.00).
+   * `null` before onboarding completes. Integer math end-to-end — no float
+   * weirdness on the wire, in DynamoDB, or at display time.
+   */
+  budgetCents: number | null;
 }
 
 export interface CreateSessionRequest {
   agentName: string;
   guestUlid: string;
-  /** Parent page hostname, forwarded so the backend can resolve CORS/account binding. */
-  hostDomain?: string;
+  /**
+   * Public account ULID from the integrator's <script data-account-ulid>
+   * attribute. Required — the backend binds the session to this account
+   * after cross-validating it against the iframe-load Referer domain.
+   */
+  accountUlid: string;
 }
 
 export type CreateSessionResponse = SessionInfo;
+
+export interface OnboardingRequest {
+  /** Budget in integer cents (e.g. 100_000 for $1,000.00). */
+  budgetCents: number;
+}
+
+export type OnboardingResponse = SessionInfo;
 
 export interface SendMessageRequest {
   sessionUlid: string;
@@ -31,4 +54,21 @@ export interface SendMessageRequest {
 
 export interface SendMessageResponse {
   reply: string;
+}
+
+/**
+ * A historical turn returned from GET /chat/web/sessions/:ulid/messages.
+ * Filtered server-side to user + assistant text only; tool-use and
+ * tool-result blocks never cross the wire.
+ */
+export interface ChatHistoryMessage {
+  id: string;
+  role: ChatRole;
+  content: string;
+  /** ISO 8601 timestamp from the backend's _createdAt_ field. */
+  timestamp: string;
+}
+
+export interface GetSessionMessagesResponse {
+  messages: ChatHistoryMessage[];
 }

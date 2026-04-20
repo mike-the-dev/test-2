@@ -16,6 +16,8 @@ import * as api from "@/lib/api";
 const session = {
   sessionUlid: "01HSESSION00000000000000000",
   displayName: "Shopping Assistant",
+  onboardingCompletedAt: "2026-04-20T12:00:00.000Z",
+  budgetCents: 100_000,
 };
 
 describe("ChatPanel", () => {
@@ -84,26 +86,26 @@ describe("ChatPanel", () => {
     });
   });
 
-  it("auto-sends the initialUserMessage once on mount", async () => {
-    sendMessageSpy.mockResolvedValue({ reply: "Great, here are some options!" });
-
+  it("hydrates initialMessages into the log on mount and does not auto-send", async () => {
     render(
       <ChatPanel
         session={session}
-        initialUserMessage="Hi! My budget is about $500."
+        initialMessages={[
+          { id: "m1", role: "user", content: "hi from last time" },
+          { id: "m2", role: "assistant", content: "welcome back!" },
+        ]}
       />
     );
 
-    await waitFor(() => {
-      expect(sendMessageSpy).toHaveBeenCalledWith({
-        sessionUlid: session.sessionUlid,
-        message: "Hi! My budget is about $500.",
-      });
-    });
-    expect(sendMessageSpy).toHaveBeenCalledTimes(1);
+    // Prior turns should be visible immediately.
     expect(screen.getByTestId("chat-message-user")).toHaveTextContent(
-      /my budget is about \$500/i
+      "hi from last time"
     );
+    expect(screen.getByTestId("chat-message-assistant")).toHaveTextContent(
+      "welcome back!"
+    );
+    // No outbound request should fire on mount — hydration is render-only.
+    expect(sendMessageSpy).not.toHaveBeenCalled();
   });
 
   it("posts a close message to window.parent when Escape is pressed", async () => {

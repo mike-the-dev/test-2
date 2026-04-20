@@ -22,12 +22,12 @@ const CLOSE_MESSAGE = { type: "instapaytient:close" } as const;
 export interface ChatPanelProps {
   session: SessionInfo;
   /**
-   * If set, the panel auto-submits this text as the visitor's first message
-   * once on mount. Used by the budget splash to prime the conversation with
-   * the dollar figure the visitor entered so the agent's opening reply is
-   * tailored to their budget.
+   * Optional prior conversation turns fetched from
+   * `GET /chat/web/sessions/:ulid/messages`. Used to hydrate the message
+   * log when a returning visitor reopens the widget. Empty or undefined
+   * means render the brand-new empty state.
    */
-  initialUserMessage?: string;
+  initialMessages?: ChatMessage[];
 }
 
 function postCloseToParent(): void {
@@ -79,12 +79,13 @@ function CloseIcon(): ReactElement {
 
 export function ChatPanel({
   session,
-  initialUserMessage,
+  initialMessages,
 }: ChatPanelProps): ReactElement {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(
+    () => initialMessages ?? []
+  );
   const [draft, setDraft] = useState<string>("");
   const [isSending, setIsSending] = useState<boolean>(false);
-  const didPrimeRef = useRef<boolean>(false);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
@@ -184,15 +185,6 @@ export function ChatPanel({
     [isSending, session.sessionUlid]
   );
 
-  // Auto-send an opening message once when `initialUserMessage` is provided.
-  // Guarded by `didPrimeRef` so HMR / StrictMode double-invokes don't spam.
-  useEffect(() => {
-    if (didPrimeRef.current) return;
-    if (!initialUserMessage || initialUserMessage.trim().length === 0) return;
-    didPrimeRef.current = true;
-    void submit(initialUserMessage);
-  }, [initialUserMessage, submit]);
-
   const onSubmit = (e: FormEvent<HTMLFormElement>): void => {
     e.preventDefault();
     void submit(draft);
@@ -253,7 +245,7 @@ export function ChatPanel({
               </Avatar.Fallback>
             </Avatar>
             <div className="rounded-2xl rounded-tl-none bg-surface-secondary px-3 py-2 text-sm text-foreground max-w-[80%]">
-              Hi! Ask me about products, pricing, or start a new cart.
+              What are you shopping for today?
             </div>
           </div>
         ) : null}

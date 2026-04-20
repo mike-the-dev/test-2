@@ -2,6 +2,9 @@ import { chatApiUrl } from "@/lib/env";
 import type {
   CreateSessionRequest,
   CreateSessionResponse,
+  GetSessionMessagesResponse,
+  OnboardingRequest,
+  OnboardingResponse,
   SendMessageRequest,
   SendMessageResponse,
 } from "@/types/chat";
@@ -39,7 +42,8 @@ async function parseBody(response: Response): Promise<unknown> {
   }
 }
 
-async function postJson<TResponse>(
+async function sendJson<TResponse>(
+  method: "GET" | "POST",
   path: string,
   body: unknown,
   init?: { signal?: AbortSignal }
@@ -49,9 +53,12 @@ async function postJson<TResponse>(
   let response: Response;
   try {
     response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      method,
+      headers:
+        method === "POST"
+          ? { "Content-Type": "application/json" }
+          : undefined,
+      body: method === "POST" ? JSON.stringify(body) : undefined,
       signal: init?.signal,
     });
   } catch (err) {
@@ -74,6 +81,21 @@ async function postJson<TResponse>(
   return parsed as TResponse;
 }
 
+function postJson<TResponse>(
+  path: string,
+  body: unknown,
+  init?: { signal?: AbortSignal }
+): Promise<TResponse> {
+  return sendJson<TResponse>("POST", path, body, init);
+}
+
+function getJson<TResponse>(
+  path: string,
+  init?: { signal?: AbortSignal }
+): Promise<TResponse> {
+  return sendJson<TResponse>("GET", path, undefined, init);
+}
+
 export function createSession(
   request: CreateSessionRequest,
   init?: { signal?: AbortSignal }
@@ -86,4 +108,26 @@ export function sendMessage(
   init?: { signal?: AbortSignal }
 ): Promise<SendMessageResponse> {
   return postJson<SendMessageResponse>("/chat/web/messages", request, init);
+}
+
+export function completeOnboarding(
+  sessionUlid: string,
+  request: OnboardingRequest,
+  init?: { signal?: AbortSignal }
+): Promise<OnboardingResponse> {
+  return postJson<OnboardingResponse>(
+    `/chat/web/sessions/${encodeURIComponent(sessionUlid)}/onboarding`,
+    request,
+    init
+  );
+}
+
+export function fetchSessionMessages(
+  sessionUlid: string,
+  init?: { signal?: AbortSignal }
+): Promise<GetSessionMessagesResponse> {
+  return getJson<GetSessionMessagesResponse>(
+    `/chat/web/sessions/${encodeURIComponent(sessionUlid)}/messages`,
+    init
+  );
 }

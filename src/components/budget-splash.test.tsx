@@ -46,7 +46,7 @@ describe("BudgetSplash", () => {
     await user.type(input, "500");
     await user.click(screen.getByRole("button", { name: /start chat/i }));
 
-    expect(onSubmit).toHaveBeenCalledWith(500);
+    expect(onSubmit).toHaveBeenCalledWith(50_000);
   });
 
   it("does not call onSubmit when the form is submitted below the minimum", async () => {

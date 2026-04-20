@@ -16,8 +16,9 @@ export const WIDGET_SOURCE = String.raw`(function () {
       return;
     }
 
-    // Derive the origin this script was served from so the iframe points
-    // back to the same host (dev = localhost:3000, prod = chat.instapaytient.com).
+    // Locate the <script> tag that loaded this bundle so we can read (a) the
+    // origin the iframe should point back to and (b) the integrator's public
+    // account ULID from its data-account-ulid attribute.
     var currentScript = document.currentScript;
     if (!currentScript) {
       var scripts = document.getElementsByTagName("script");
@@ -31,6 +32,23 @@ export const WIDGET_SOURCE = String.raw`(function () {
     var widgetOrigin = currentScript
       ? new URL(currentScript.src).origin
       : window.location.origin;
+    var accountUlid =
+      currentScript && currentScript.dataset
+        ? currentScript.dataset.accountUlid || ""
+        : "";
+    if (!accountUlid) {
+      // Non-fatal: the iframe will load and the backend will reject the
+      // session-create call, surfacing a visible ChatErrorCard to the
+      // visitor. A console.error here gives the integrator a direct signal
+      // during testing.
+      try {
+        console.error(
+          "[instapaytient] widget.js is missing data-account-ulid on its script tag"
+        );
+      } catch (_) {
+        // console may be unavailable.
+      }
+    }
 
     // --- Inline ULID generator (Crockford base32). ---------------------------
     var ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -75,14 +93,13 @@ export const WIDGET_SOURCE = String.raw`(function () {
     }
 
     var guestId = ensureGuestId();
-    var hostDomain = window.location.hostname;
     var iframeUrl =
       widgetOrigin +
       "/embed?guestId=" +
       encodeURIComponent(guestId) +
       "&agent=shopping_assistant" +
-      "&hostDomain=" +
-      encodeURIComponent(hostDomain);
+      "&accountUlid=" +
+      encodeURIComponent(accountUlid);
 
     // --- Root container. ----------------------------------------------------
     var root = document.createElement("div");
@@ -154,6 +171,11 @@ export const WIDGET_SOURCE = String.raw`(function () {
       if (isOpen) return;
       iframe = document.createElement("iframe");
       iframe.setAttribute("title", "Instapaytient chat");
+      // Force the browser to send the parent page's origin as the Referer on
+      // the iframe load, regardless of the host page's Referrer-Policy. The
+      // backend validates that origin against the account ULID at /embed
+      // render time — an unspoofable check that body fields can't give us.
+      iframe.setAttribute("referrerpolicy", "origin");
       iframe.src = iframeUrl;
       iframe.style.border = "0";
       iframe.style.background = "#ffffff";

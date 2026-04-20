@@ -22,8 +22,12 @@ const DEFAULT_BUDGET_DOLLARS = 1000;
 const LIVE_UPDATE_DEBOUNCE_MS = 400;
 
 export interface BudgetSplashProps {
-  /** Called with the validated whole-dollar amount when the user submits. */
-  onSubmit: (amountDollars: number) => void;
+  /**
+   * Called with the validated budget in integer cents (e.g. 100_000 for
+   * $1,000.00) when the user submits. The backend's onboarding endpoint
+   * also speaks cents — we keep integer math end-to-end across the wire.
+   */
+  onSubmit: (budgetCents: number) => void;
 }
 
 function parseDollarInput(raw: string): number {
@@ -62,7 +66,7 @@ export function BudgetSplash({ onSubmit }: BudgetSplashProps): ReactElement {
   const handleSubmit = (e: FormEvent<HTMLFormElement>): void => {
     e.preventDefault();
     if (!isValid) return;
-    onSubmit(amount);
+    onSubmit(Math.round(amount * 100));
   };
 
   return (
