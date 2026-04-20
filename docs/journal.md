@@ -36,6 +36,31 @@ At the end of a working session — or after shipping a meaningful milestone —
 
 ---
 
+## 2026-04-20 — Session contract goes server-authoritative: accountUlid validation + structured onboarding + history hydration
+
+**Goal:** close two gaps exposed during Playwright testing of the splash milestone — (a) the embed's account identity was a spoofable body field, and (b) every reopen of the widget re-ran the splash and re-sent the budget intro, bloating the conversation with redundant turns.
+
+**What changed:**
+- Embed snippet now carries `data-account-ulid="A#…"` on the `<script>` tag. `widget.js` reads it via `document.currentScript.dataset`, passes it to the iframe URL, and sets `referrerpolicy="origin"` on the iframe so the browser-set Referer carries the parent page hostname to the backend unspoofed.
+- Backend + frontend agreed on a locked session contract: `POST /sessions` response gains `onboardingCompletedAt: string | null` and `budgetCents: number | null`; new `POST /sessions/:ulid/onboarding` takes `{ budgetCents }` and atomically records onboarding; new `GET /sessions/:ulid/messages` returns prior user + assistant turns filtered server-side from the raw message record (tool-use and tool-result blocks never cross the wire).
+- `/embed` gained a five-state machine — `loading | splash | hydrating | chat | error` — branching on `onboardingCompletedAt`. First-time visitors get the splash; returning visitors skip it, hydrate history, and land back in their conversation.
+- `ChatPanel` dropped the `initialUserMessage` auto-send in favor of an `initialMessages` hydration prop. Budget now flows to the agent as a structured system note appended by the backend *uncached*, not as a user message, so the prompt cache stays warm (Anthropic logs confirmed ~1 extra input token per turn vs. baseline — the budget block itself).
+- Budget is integer cents end-to-end: splash → wire → DynamoDB. UI formats to dollars only at render time.
+
+**Decisions worth remembering:**
+- **Server-authoritative over client-only onboarding flag.** We debated a localStorage-only `splash_done_<guest>` flag. Went the longer way (backend fields + endpoints) because it buys us structured budget data (not buried in prose), free analytics via timestamp, natural extension points for future onboarding steps, and resilience to client bugs. The localStorage idea now reads as "optional optimistic render hint" — deferred; server answer is ground truth.
+- **Timestamp over boolean for `onboardingCompletedAt`.** Same coerce-to-boolean at the edge (`!!session.onboardingCompletedAt`), but adds free analytics on *when* visitors splashed and lets us expire/refresh onboarding later with zero schema churn.
+- **Cents on the wire, not just in the DB.** Backend initially proposed `budgetDollars: number` on the wire with `budget_cents` in storage. Pushed back — integer math end-to-end removes one whole class of float bugs, matches Affirm's `data-amount` convention, and costs nothing at the UI boundary (`Math.round(dollars * 100)`).
+- **Budget as system context, not user message.** The agent receives the budget via a synthetic "User context: shopping budget is approximately $X" prepended uncached to the system prompt, not by the frontend auto-sending a "my budget is $X" user message. This keeps the conversation stream clean of onboarding artifacts and lets the prompt cache stay warm.
+- **Graceful degrade on hydration failure.** If `GET /messages` fails for an onboarded session, we drop to an empty ChatPanel instead of erroring out. Visitor can still talk; backend context is intact; worst case they see a blank canvas.
+
+**Next:**
+- Fetch-history endpoint is live but not yet paired with a proper "welcome back" empty state when hydration returns zero turns. Small polish.
+- Optimistic render hint from localStorage to skip the initial spinner flash for returning visitors. Deferred — the flash is sub-second and the server answer is authoritative anyway.
+- Cross-device continuity is still gated by the guest ULID identity. If/when we add real auth, the server-authoritative onboarding flag carries over for free.
+
+---
+
 ## 2026-04-19 — Budget-first splash + Sonnet caching savings validated
 
 **Goal:** put a pre-chat screen in front of the agent that captures a visitor budget, shows live Affirm messaging plus client-side 0% APR example payments, and forwards the amount to the agent as an opening message. Also: verify the backend caching work on Sonnet produces real cost savings under a representative three-turn conversation.
