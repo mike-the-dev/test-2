@@ -47,6 +47,7 @@ next-env.d.ts
 # playwright MCP artifacts (screenshots, console dumps, snapshots)
 .playwright-mcp/
 sandbox-*.png
+splash-*.png
 
 # transient hero-ui reference project (checked in locally during M3 UI refactor)
 .hero-project-chat-ui/
