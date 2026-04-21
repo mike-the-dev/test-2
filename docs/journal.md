@@ -36,6 +36,30 @@ At the end of a working session — or after shipping a meaningful milestone —
 
 ---
 
+## 2026-04-21 — Kickoff guard goes server-authoritative
+
+**Goal:** replace the client-side localStorage kickoff guard with a server-authoritative `kickoffCompletedAt: string | null` field so the backend is the single source of truth for whether a session has been greeted. Backend shipped the field on both session-create and onboarding responses; this milestone is the frontend cutover.
+
+**What changed:**
+- `SessionInfo` in `src/types/chat.ts` gained `kickoffCompletedAt: string | null` alongside `onboardingCompletedAt` and `budgetCents`. Both `POST /chat/web/sessions` and `POST /chat/web/sessions/:ulid/onboarding` return it. Backend stamps only after the welcome PutCommand commits (stamp UpdateCommand comes after by construction), so retry-on-failure semantics remain natural without any client-side bookkeeping.
+- Ripped out `kickoffStorageKey`, `hasKickoffFired`, and `markKickoffFired` from `embed-client.tsx` along with every reference to the `instapaytient_kickoff_<sessionUlid>` localStorage key. First-time-visitor path now guards on `updated.kickoffCompletedAt !== null`.
+- Returning-visitor path gained a new conditional dispatch block for the onboarded-but-never-kicked-off edge case. Without it, any kickoff that failed before the backend stamped would leave the session permanently ungreeted on subsequent loads — the whole retry argument for moving authority server-side collapses if the frontend only dispatches on the first-time path.
+- Defense-in-depth sentinel filters kept verbatim — the hydration-side `__SESSION_KICKOFF__` filter in `src/lib/api.ts` and the render-side suppression in `src/components/chat-message.tsx` both still fire regardless of which side owns the dispatch guard. Cheap and they catch drift.
+- Tests migrated to a `makeSession({ overrides })` fixture helper. Four new scenarios: idempotent skip on first-time path (onboarding response already stamped), idempotent skip on returning-visitor path (session-create already stamped), dispatch on returning-visitor path when null, and hydrated-history fallback when returning-visitor kickoff fails. All localStorage assertions gone.
+
+**Decisions worth remembering:**
+- **Hard-required, not optional.** Typed the new field as `string | null`, not `string | null | undefined`. Backend is live and guarantees the field on both endpoints. Accepting `undefined` would silently coerce to "dispatch always" on a backend regression and produce duplicate greetings. Loud runtime failure on schema drift beats silent behavioral failure — we learned this the hard way on the `budgetCents`-vs-`budgetDollars` dance.
+- **Two parallel dispatch blocks, not a shared helper.** The first-time path and the returning-visitor path each have their own kickoff try/catch. Extracting looked tempting in review but the differences are load-bearing (different session variables, different `initialMessages` composition, different closure scopes for the abort signal) and the two blocks together are under 40 lines. Trigger for extraction: a third dispatch site.
+- **Abort-guard asymmetry is intentional.** The useEffect closure has a `cancelled` flag it checks alongside `controller.signal.aborted`; the `handleSplashSubmit` callback has only the controller signal because `cancelled` lives in the useEffect scope. A one-line comment at the top of `submitOnboarding` documents why the next reader shouldn't assume it was an oversight.
+- **The returning-visitor dispatch block was not in the original brief.** The backend memo described a two-site predicate swap; the arch-planner caught the gap during review. Adding it in-scope is the correct call: without it, the server-authoritative model's retry story is only half true. A separate PR "for correctness" would have left the codebase in a temporarily-wrong state for no reason.
+
+**Next:**
+- Playwright live verification against the four scenarios in `PROMPT_DISCOVERY_SERVICE.md` — fresh visitor kickoff, hard-refresh mid-session, devtools race probe (send a second `__SESSION_KICKOFF__` manually to confirm backend idempotency returns the stored welcome rather than regenerating), regression sweep over budget greeting, contact gate, catalog gate, checkout URL, post-link cart edits.
+- Historic `tool_outputs` through the hydration endpoint remain unsolved — reopening a previously-previewed cart still shows no card until a new `preview_cart` fires. Same gap as before this milestone.
+- Interactive cart card (edit qty, remove line) still waiting on backend cart-mutation tools.
+
+---
+
 ## 2026-04-20 (late night) — Auto-greeting on splash submit replaces the stateless empty-state
 
 **Goal:** eliminate the hardcoded "What are you shopping for today?" placeholder that appeared between splash submit and the visitor's first message. Shopping intent is already captured by the time they submit the budget; the agent should greet them proactively instead of waiting.
