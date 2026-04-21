@@ -1,5 +1,36 @@
 export type ChatRole = "user" | "assistant";
 
+export interface ToolOutput {
+  /** Normalized from wire field `tool_name`. */
+  toolName: string;
+  /** Raw JSON string produced by the tool. */
+  content: string;
+  /** Normalized from wire field `is_error`. */
+  isError?: boolean;
+}
+
+export interface CartLineItem {
+  lineId: string;
+  serviceId: string;
+  name: string;
+  category: string;
+  imageUrl: string;
+  variant: string | null;
+  variantLabel: string | null;
+  quantity: number;
+  price: number;
+  total: number;
+}
+
+export interface CartPreviewPayload {
+  cartId: string;
+  itemCount: number;
+  /** Always "usd" for v1. */
+  currency: string;
+  cartTotal: number;
+  lines: CartLineItem[];
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
@@ -8,6 +39,8 @@ export interface ChatMessage {
   pending?: boolean;
   /** True when the message represents a failed send that can be retried. */
   errored?: boolean;
+  /** Tool outputs attached to this message, if any. */
+  toolOutputs?: ToolOutput[];
 }
 
 export interface SessionInfo {
@@ -54,6 +87,7 @@ export interface SendMessageRequest {
 
 export interface SendMessageResponse {
   reply: string;
+  toolOutputs?: ToolOutput[];
 }
 
 /**

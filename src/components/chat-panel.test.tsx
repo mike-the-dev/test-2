@@ -12,6 +12,7 @@ import {
 
 import { ChatPanel } from "@/components/chat-panel";
 import * as api from "@/lib/api";
+import type { SendMessageResponse } from "@/types/chat";
 
 const session = {
   sessionUlid: "01HSESSION00000000000000000",
@@ -125,5 +126,60 @@ describe("ChatPanel", () => {
       { type: "instapaytient:close" },
       "*"
     );
+  });
+
+  it("applies within-turn dedupe before attaching toolOutputs — keeps only the last preview_cart", async () => {
+    expect.assertions(1);
+
+    const twoPreviewCarts: SendMessageResponse = {
+      reply: "here you go",
+      toolOutputs: [
+        { toolName: "preview_cart", content: '{"cart_id":"C1","lines":[]}' },
+        { toolName: "preview_cart", content: '{"cart_id":"C2","lines":[]}' },
+      ],
+    };
+    sendMessageSpy.mockResolvedValue(twoPreviewCarts);
+
+    // We verify by checking the data-testid attributes on rendered cart cards.
+    // Only one cart-preview-card should appear (deduplicated to the last entry).
+    const user = userEvent.setup();
+    render(<ChatPanel session={session} />);
+
+    await user.type(screen.getByLabelText(/type your message/i), "show cart");
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => {
+      const cards = screen.queryAllByTestId("cart-preview-card");
+      expect(cards).toHaveLength(1);
+    });
+  });
+
+  it("attaches toolOutputs to the resolved assistant message when sendMessage returns them", async () => {
+    expect.assertions(1);
+
+    sendMessageSpy.mockResolvedValue({
+      reply: "Here is your cart",
+      toolOutputs: [
+        {
+          toolName: "preview_cart",
+          content: JSON.stringify({
+            cart_id: "C1",
+            item_count: 0,
+            currency: "usd",
+            cart_total: 0,
+            lines: [],
+          }),
+        },
+      ],
+    });
+
+    const user = userEvent.setup();
+    render(<ChatPanel session={session} />);
+    await user.type(screen.getByLabelText(/type your message/i), "cart please");
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("cart-preview-card")).toBeInTheDocument();
+    });
   });
 });

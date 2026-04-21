@@ -15,6 +15,7 @@ import { ulid } from "ulid";
 
 import { ChatMessageView } from "@/components/chat-message";
 import { ChatApiError, sendMessage } from "@/lib/api";
+import { dedupeToolOutputsWithinTurn } from "@/lib/tool-renderers";
 import type { ChatMessage, SessionInfo } from "@/types/chat";
 
 const CLOSE_MESSAGE = { type: "instapaytient:close" } as const;
@@ -144,21 +145,52 @@ export function ChatPanel({
       });
 
       try {
-        const { reply } = await sendMessage({
+        const { reply, toolOutputs: rawToolOutputs } = await sendMessage({
           sessionUlid: session.sessionUlid,
           message: text,
         });
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === pendingId
-              ? {
-                  id: pendingId,
-                  role: "assistant",
-                  content: reply,
-                }
-              : m
-          )
-        );
+
+        // Within-turn dedupe: for tools marked dedupeWithinTurn (e.g.
+        // preview_cart), keep only the last occurrence in this turn's outputs.
+        const toolOutputs =
+          rawToolOutputs !== undefined
+            ? dedupeToolOutputsWithinTurn(rawToolOutputs)
+            : undefined;
+
+        const hasNewPreviewCart =
+          toolOutputs !== undefined &&
+          toolOutputs.some((output) => output.toolName === "preview_cart");
+
+        setMessages((prev) => {
+          const stripped = prev.map((message): ChatMessage => {
+            // Cross-turn dedupe: when a new preview_cart arrives, remove
+            // preview_cart entries from all prior assistant messages.
+            if (
+              hasNewPreviewCart &&
+              message.role === "assistant" &&
+              message.toolOutputs !== undefined
+            ) {
+              const filtered = message.toolOutputs.filter(
+                (output) => output.toolName !== "preview_cart"
+              );
+              return {
+                ...message,
+                toolOutputs: filtered.length > 0 ? filtered : undefined,
+              };
+            }
+            return message;
+          });
+
+          return stripped.map((message): ChatMessage => {
+            if (message.id !== pendingId) return message;
+            return {
+              id: pendingId,
+              role: "assistant",
+              content: reply,
+              ...(toolOutputs !== undefined && { toolOutputs }),
+            };
+          });
+        });
       } catch (err) {
         const status = err instanceof ChatApiError ? err.status : "network";
         console.error("[instapaytient] send failed", {

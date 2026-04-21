@@ -200,6 +200,52 @@ describe("api client", () => {
     );
   });
 
+  it("sendMessage omits toolOutputs from the result when wire has no tool_outputs", async () => {
+    mockFetchOnce({ ok: true, status: 200, body: { reply: "hi" } });
+
+    const result = await sendMessage({ sessionUlid: "S1", message: "hello" });
+
+    expect(result).toEqual({ reply: "hi" });
+    expect(result).not.toHaveProperty("toolOutputs");
+  });
+
+  it("sendMessage normalizes tool_outputs snake_case fields to camelCase toolOutputs", async () => {
+    mockFetchOnce({
+      ok: true,
+      status: 200,
+      body: {
+        reply: "here is your cart",
+        tool_outputs: [
+          { tool_name: "preview_cart", content: '{"cart_id":"C1"}', is_error: false },
+          { tool_name: "save_user_fact", content: '{"fact":"budget"}' },
+        ],
+      },
+    });
+
+    const result = await sendMessage({ sessionUlid: "S1", message: "show cart" });
+
+    expect(result.reply).toBe("here is your cart");
+    expect(result.toolOutputs).toHaveLength(2);
+    expect(result.toolOutputs![0]).toEqual({
+      toolName: "preview_cart",
+      content: '{"cart_id":"C1"}',
+      isError: false,
+    });
+    expect(result.toolOutputs![1]).toEqual({
+      toolName: "save_user_fact",
+      content: '{"fact":"budget"}',
+      isError: undefined,
+    });
+  });
+
+  it("sendMessage preserves toolOutputs as undefined (not []) when tool_outputs is absent", async () => {
+    mockFetchOnce({ ok: true, status: 200, body: { reply: "ok" } });
+
+    const result = await sendMessage({ sessionUlid: "S1", message: "ok" });
+
+    expect("toolOutputs" in result).toBe(false);
+  });
+
   it("throws ChatApiError with status and parsed body on 4xx", async () => {
     mockFetchOnce({
       ok: false,

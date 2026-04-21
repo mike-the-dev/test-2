@@ -62,4 +62,104 @@ describe("ChatMessageView", () => {
     );
     expect(screen.queryByTestId("open-checkout-button")).toBeNull();
   });
+
+  it("renders a cart-preview-card when the assistant message carries a preview_cart tool output", () => {
+    const cartOutput = {
+      toolName: "preview_cart",
+      content: JSON.stringify({
+        cart_id: "C1",
+        item_count: 0,
+        currency: "usd",
+        cart_total: 0,
+        lines: [],
+      }),
+    };
+
+    render(
+      <ChatMessageView
+        message={{
+          id: "a4",
+          role: "assistant",
+          content: "Here is your cart.",
+          toolOutputs: [cartOutput],
+        }}
+      />
+    );
+
+    expect(screen.getByTestId("cart-preview-card")).toBeInTheDocument();
+  });
+
+  it("does not render tool outputs while the assistant message is pending", () => {
+    const cartOutput = {
+      toolName: "preview_cart",
+      content: JSON.stringify({
+        cart_id: "C1",
+        item_count: 0,
+        currency: "usd",
+        cart_total: 0,
+        lines: [],
+      }),
+    };
+
+    render(
+      <ChatMessageView
+        message={{
+          id: "a5",
+          role: "assistant",
+          content: "",
+          pending: true,
+          toolOutputs: [cartOutput],
+        }}
+      />
+    );
+
+    expect(screen.queryByTestId("cart-preview-card")).toBeNull();
+  });
+
+  it("does not render tool outputs for user messages", () => {
+    const cartOutput = {
+      toolName: "preview_cart",
+      content: JSON.stringify({
+        cart_id: "C1",
+        item_count: 0,
+        currency: "usd",
+        cart_total: 0,
+        lines: [],
+      }),
+    };
+
+    render(
+      <ChatMessageView
+        message={{
+          id: "u2",
+          role: "user",
+          content: "hello",
+          toolOutputs: [cartOutput],
+        }}
+      />
+    );
+
+    expect(screen.queryByTestId("cart-preview-card")).toBeNull();
+  });
+
+  it("does not render tool outputs for registered stubs that return null", () => {
+    const stubOutput = {
+      toolName: "save_user_fact",
+      content: '{"fact":"prefers evening"}',
+    };
+
+    render(
+      <ChatMessageView
+        message={{
+          id: "a6",
+          role: "assistant",
+          content: "Got it, noted.",
+          toolOutputs: [stubOutput],
+        }}
+      />
+    );
+
+    // save_user_fact is a stub that returns null — nothing extra should render.
+    expect(screen.queryByTestId("cart-preview-card")).toBeNull();
+  });
 });

@@ -9,7 +9,21 @@ import type {
   OnboardingResponse,
   SendMessageRequest,
   SendMessageResponse,
+  ToolOutput,
 } from "@/types/chat";
+
+/**
+ * Raw wire shape for the send-message response. Internal only — never exported.
+ * The public `SendMessageResponse` uses camelCase throughout.
+ */
+interface SendMessageWireResponse {
+  reply: string;
+  tool_outputs?: Array<{
+    tool_name: string;
+    content: string;
+    is_error?: boolean;
+  }>;
+}
 
 /**
  * Error thrown by the chat API client on non-2xx responses or network failures.
@@ -99,11 +113,27 @@ export const createSession = (
 ): Promise<CreateSessionResponse> =>
   postJson<CreateSessionResponse>("/chat/web/sessions", request, init);
 
-export const sendMessage = (
+export const sendMessage = async (
   request: SendMessageRequest,
   init?: { signal?: AbortSignal }
-): Promise<SendMessageResponse> =>
-  postJson<SendMessageResponse>("/chat/web/messages", request, init);
+): Promise<SendMessageResponse> => {
+  const wire = await postJson<SendMessageWireResponse>(
+    "/chat/web/messages",
+    request,
+    init
+  );
+
+  const toolOutputs: ToolOutput[] | undefined =
+    wire.tool_outputs === undefined
+      ? undefined
+      : wire.tool_outputs.map((entry) => ({
+          toolName: entry.tool_name,
+          content: entry.content,
+          isError: entry.is_error,
+        }));
+
+  return { reply: wire.reply, ...(toolOutputs !== undefined && { toolOutputs }) };
+};
 
 export const completeOnboarding = (
   sessionUlid: string,

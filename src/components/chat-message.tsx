@@ -1,8 +1,9 @@
 "use client";
 
 import { Avatar, Link, Spinner } from "@heroui/react";
-import type { ReactElement } from "react";
+import { Fragment, type ReactElement } from "react";
 
+import { renderToolOutput } from "@/lib/tool-renderers";
 import { extractCheckoutUrl } from "@/lib/checkout-url";
 import { SafeMarkdown } from "@/lib/markdown";
 import type { ChatMessage } from "@/types/chat";
@@ -80,6 +81,15 @@ export function ChatMessageView({ message }: ChatMessageProps): ReactElement {
             Open checkout
           </Link>
         ) : null}
+        {!isUser && !message.pending && message.toolOutputs?.length
+          ? message.toolOutputs.map((output, index) => {
+              const element = renderToolOutput(output);
+              if (element === null) return null;
+              return (
+                <Fragment key={`${index}-${output.toolName}`}>{element}</Fragment>
+              );
+            })
+          : null}
       </div>
     </div>
   );
