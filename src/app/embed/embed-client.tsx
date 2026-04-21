@@ -19,27 +19,6 @@ import { ensureGuestId } from "@/lib/guest-id";
 import { dedupeToolOutputsWithinTurn } from "@/lib/tool-renderers";
 import type { ChatMessage, SessionInfo } from "@/types/chat";
 
-const kickoffStorageKey = (sessionUlid: string): string =>
-  `instapaytient_kickoff_${sessionUlid}`;
-
-const hasKickoffFired = (sessionUlid: string): boolean => {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(kickoffStorageKey(sessionUlid)) === "1";
-  } catch {
-    return false;
-  }
-};
-
-const markKickoffFired = (sessionUlid: string): void => {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(kickoffStorageKey(sessionUlid), "1");
-  } catch {
-    // Safari private mode, storage disabled — swallow; guard is best-effort only.
-  }
-};
-
 /**
  * Server-authoritative state machine for the embedded chat flow:
  *
@@ -134,45 +113,75 @@ export const EmbedClient = ({
 
         if (cancelled) return;
 
-        // Returning visitor — hydrate prior turns before rendering the chat.
         if (session.onboardingCompletedAt) {
           setState({ status: "hydrating", session });
+
+          let hydratedMessages: ChatMessage[] = [];
           try {
             const { messages } = await fetchSessionMessages(
               session.sessionUlid,
               { signal: controller.signal }
             );
             if (cancelled || controller.signal.aborted) return;
-            setState({
-              status: "chat",
-              session,
-              initialMessages: messages
-                .filter(
-                  (message) =>
-                    !(
-                      message.role === "user" &&
-                      message.content === SESSION_KICKOFF_CONTENT
-                    )
-                )
-                .map((message) => ({
-                  id: message.id,
-                  role: message.role,
-                  content: message.content,
-                })),
-            });
+            hydratedMessages = messages
+              .filter(
+                (message) =>
+                  !(
+                    message.role === "user" &&
+                    message.content === SESSION_KICKOFF_CONTENT
+                  )
+              )
+              .map((message) => ({
+                id: message.id,
+                role: message.role,
+                content: message.content,
+              }));
           } catch (err) {
             if (cancelled || controller.signal.aborted) return;
-            // Hydration failure is not fatal — let the visitor continue
-            // with an empty log. Their backend context is still intact.
             console.error("[instapaytient] history hydrate failed", {
               status: err instanceof ChatApiError ? err.status : "unknown",
             });
-            setState({ status: "chat", session, initialMessages: [] });
           }
+
+          if (session.kickoffCompletedAt === null) {
+            setState({ status: "kickoff", session });
+            try {
+              const response = await sendMessage(
+                { sessionUlid: session.sessionUlid, message: SESSION_KICKOFF_CONTENT },
+                { signal: controller.signal }
+              );
+              if (cancelled || controller.signal.aborted) return;
+              const deduped =
+                response.toolOutputs !== undefined
+                  ? dedupeToolOutputsWithinTurn(response.toolOutputs)
+                  : undefined;
+              const greeting: ChatMessage = {
+                id: ulid(),
+                role: "assistant",
+                content: response.reply,
+                ...(deduped !== undefined && deduped.length > 0
+                  ? { toolOutputs: deduped }
+                  : {}),
+              };
+              setState({
+                status: "chat",
+                session,
+                initialMessages: [greeting, ...hydratedMessages],
+              });
+            } catch (err) {
+              if (cancelled || controller.signal.aborted) return;
+              console.error("[instapaytient] kickoff failed (returning visitor)", {
+                status: err instanceof ChatApiError ? err.status : "unknown",
+              });
+              setState({ status: "chat", session, initialMessages: hydratedMessages });
+            }
+            return;
+          }
+
+          setState({ status: "chat", session, initialMessages: hydratedMessages });
           return;
         }
 
-        // First-time visitor — splash for budget.
         setState({ status: "splash", session });
       } catch (err) {
         if (cancelled || controller.signal.aborted) return;
@@ -206,6 +215,7 @@ export const EmbedClient = ({
       setState({ status: "hydrating", session });
 
       const submitOnboarding = async (): Promise<void> => {
+        // `cancelled` (useEffect scope) is not reachable from this callback; abort relies on `controller.signal`.
         let updated: SessionInfo;
         try {
           updated = await completeOnboarding(
@@ -223,9 +233,7 @@ export const EmbedClient = ({
         }
         if (controller.signal.aborted) return;
 
-        // Frontend guard — if the kickoff has already fired for this session
-        // ULID (double-click, state replay), skip and drop into empty chat.
-        if (hasKickoffFired(updated.sessionUlid)) {
+        if (updated.kickoffCompletedAt !== null) {
           setState({ status: "chat", session: updated, initialMessages: [] });
           return;
         }
@@ -241,10 +249,6 @@ export const EmbedClient = ({
             { signal: controller.signal }
           );
           if (controller.signal.aborted) return;
-
-          // Set the guard AFTER success. A failed kickoff leaves no trace so a
-          // retry (page reload) can try again instead of being stuck.
-          markKickoffFired(updated.sessionUlid);
 
           const deduped =
             response.toolOutputs !== undefined
@@ -270,8 +274,7 @@ export const EmbedClient = ({
           console.error("[instapaytient] kickoff failed", {
             status: err instanceof ChatApiError ? err.status : "unknown",
           });
-          // Kickoff is a nice-to-have — if it fails, visitor still gets a
-          // working (empty) chat instead of an error card.
+          // Kickoff is a nice-to-have — fall through rather than erroring out.
           setState({ status: "chat", session: updated, initialMessages: [] });
         }
       };

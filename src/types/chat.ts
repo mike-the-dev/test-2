@@ -53,6 +53,13 @@ export interface SessionInfo {
    */
   onboardingCompletedAt: string | null;
   /**
+   * ISO 8601 timestamp of when the session's opening kickoff greeting was
+   * dispatched, or `null` if the kickoff has not yet fired. Backend is
+   * idempotent — re-dispatching `__SESSION_KICKOFF__` on a stamped session
+   * returns the stored welcome without re-spending tokens.
+   */
+  kickoffCompletedAt: string | null;
+  /**
    * Visitor's captured budget in integer cents (e.g. 100_000 for $1,000.00).
    * `null` before onboarding completes. Integer math end-to-end — no float
    * weirdness on the wire, in DynamoDB, or at display time.
