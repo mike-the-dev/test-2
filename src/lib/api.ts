@@ -13,6 +13,17 @@ import type {
 } from "@/types/chat";
 
 /**
+ * Shared wire contract — the user-message `content` string the backend
+ * recognizes as a "session kickoff" trigger. On seeing this exact content, the
+ * backend generates the opening assistant greeting and also filters the user
+ * turn out of `GET /chat/web/sessions/:ulid/messages` hydration responses.
+ *
+ * Never change this without coordinating with the backend; must match their
+ * constant byte-for-byte.
+ */
+export const SESSION_KICKOFF_CONTENT = "__SESSION_KICKOFF__";
+
+/**
  * Raw wire shape for the send-message response. Internal only — never exported.
  * The public `SendMessageResponse` uses camelCase throughout.
  */

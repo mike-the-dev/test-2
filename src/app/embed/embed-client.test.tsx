@@ -26,14 +26,26 @@ describe("EmbedClient", () => {
   let createSessionSpy: MockInstance<typeof api.createSession>;
   let completeOnboardingSpy: MockInstance<typeof api.completeOnboarding>;
   let fetchMessagesSpy: MockInstance<typeof api.fetchSessionMessages>;
+  let sendMessageSpy: MockInstance<typeof api.sendMessage>;
 
   beforeEach(() => {
     createSessionSpy = vi.spyOn(api, "createSession");
     completeOnboardingSpy = vi.spyOn(api, "completeOnboarding");
     fetchMessagesSpy = vi.spyOn(api, "fetchSessionMessages");
+    sendMessageSpy = vi.spyOn(api, "sendMessage");
+    try {
+      window.localStorage.clear();
+    } catch {
+      // ignore if storage is unavailable
+    }
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    try {
+      window.localStorage.clear();
+    } catch {
+      // ignore
+    }
   });
 
   it("renders the budget splash when the server returns a non-onboarded session", async () => {
@@ -67,7 +79,101 @@ describe("EmbedClient", () => {
     expect(fetchMessagesSpy).not.toHaveBeenCalled();
   });
 
-  it("submitting the splash calls completeOnboarding with budgetCents and flips to ChatPanel", async () => {
+  it("submitting the splash calls completeOnboarding, fires the kickoff, and seeds the chat with the greeting", async () => {
+    createSessionSpy.mockResolvedValue({
+      sessionUlid: SESSION,
+      displayName: "Shopping Assistant",
+      onboardingCompletedAt: null,
+      budgetCents: null,
+    });
+    completeOnboardingSpy.mockResolvedValue({
+      sessionUlid: SESSION,
+      displayName: "Shopping Assistant",
+      onboardingCompletedAt: "2026-04-20T12:00:00.000Z",
+      budgetCents: 100_000,
+    });
+    sendMessageSpy.mockResolvedValue({
+      reply: "Welcome! What can I help you find today?",
+    });
+
+    const user = userEvent.setup();
+    render(
+      <EmbedClient
+        agent="shopping_assistant"
+        guestId={GUEST}
+        accountUlid={ACCOUNT}
+      />
+    );
+
+    await screen.findByTestId("budget-splash");
+    await user.click(screen.getByRole("button", { name: /start chat/i }));
+
+    await waitFor(() => {
+      expect(completeOnboardingSpy).toHaveBeenCalledWith(
+        SESSION,
+        { budgetCents: 100_000 },
+        expect.objectContaining({ signal: expect.any(AbortSignal) })
+      );
+    });
+    await waitFor(() => {
+      expect(sendMessageSpy).toHaveBeenCalledWith(
+        { sessionUlid: SESSION, message: "__SESSION_KICKOFF__" },
+        expect.objectContaining({ signal: expect.any(AbortSignal) })
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("budget-splash")).toBeNull();
+      expect(screen.getByTestId("chat-message-assistant")).toHaveTextContent(
+        "Welcome! What can I help you find today?"
+      );
+      expect(screen.getByLabelText(/type your message/i)).toBeInTheDocument();
+    });
+    expect(
+      window.localStorage.getItem(`instapaytient_kickoff_${SESSION}`)
+    ).toBe("1");
+  });
+
+  it("falls back to an empty chat when the kickoff sendMessage fails", async () => {
+    createSessionSpy.mockResolvedValue({
+      sessionUlid: SESSION,
+      displayName: "Shopping Assistant",
+      onboardingCompletedAt: null,
+      budgetCents: null,
+    });
+    completeOnboardingSpy.mockResolvedValue({
+      sessionUlid: SESSION,
+      displayName: "Shopping Assistant",
+      onboardingCompletedAt: "2026-04-20T12:00:00.000Z",
+      budgetCents: 100_000,
+    });
+    sendMessageSpy.mockRejectedValue(
+      new api.ChatApiError("kickoff blew up", 500, null)
+    );
+
+    const user = userEvent.setup();
+    render(
+      <EmbedClient
+        agent="shopping_assistant"
+        guestId={GUEST}
+        accountUlid={ACCOUNT}
+      />
+    );
+
+    await screen.findByTestId("budget-splash");
+    await user.click(screen.getByRole("button", { name: /start chat/i }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/type your message/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("chat-message-assistant")).toBeNull();
+    // Guard must NOT be set on failure — retry on next load should try again.
+    expect(
+      window.localStorage.getItem(`instapaytient_kickoff_${SESSION}`)
+    ).toBeNull();
+  });
+
+  it("skips the kickoff when the localStorage guard is already set for the session", async () => {
+    window.localStorage.setItem(`instapaytient_kickoff_${SESSION}`, "1");
     createSessionSpy.mockResolvedValue({
       sessionUlid: SESSION,
       displayName: "Shopping Assistant",
@@ -91,23 +197,13 @@ describe("EmbedClient", () => {
     );
 
     await screen.findByTestId("budget-splash");
-    // Default budget is $1,000 → 100_000 cents; just click Start chat.
     await user.click(screen.getByRole("button", { name: /start chat/i }));
 
     await waitFor(() => {
-      expect(completeOnboardingSpy).toHaveBeenCalledWith(
-        SESSION,
-        { budgetCents: 100_000 },
-        expect.objectContaining({ signal: expect.any(AbortSignal) })
-      );
+      expect(screen.getByLabelText(/type your message/i)).toBeInTheDocument();
     });
-    // Splash is gone, ChatPanel is visible.
-    await waitFor(() => {
-      expect(screen.queryByTestId("budget-splash")).toBeNull();
-      expect(
-        screen.getByLabelText(/type your message/i)
-      ).toBeInTheDocument();
-    });
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("chat-message-assistant")).toBeNull();
   });
 
   it("hydrates prior messages and skips the splash for an already-onboarded session", async () => {
@@ -157,6 +253,46 @@ describe("EmbedClient", () => {
     );
     // Splash submit must not fire for returning visitors.
     expect(completeOnboardingSpy).not.toHaveBeenCalled();
+  });
+
+  it("filters __SESSION_KICKOFF__ user turns out of hydrated history", async () => {
+    createSessionSpy.mockResolvedValue({
+      sessionUlid: SESSION,
+      displayName: "Shopping Assistant",
+      onboardingCompletedAt: "2026-04-19T10:00:00.000Z",
+      budgetCents: 150_000,
+    });
+    fetchMessagesSpy.mockResolvedValue({
+      messages: [
+        {
+          id: "m0",
+          role: "user",
+          content: "__SESSION_KICKOFF__",
+          timestamp: "2026-04-19T10:00:59.000Z",
+        },
+        {
+          id: "m1",
+          role: "assistant",
+          content: "Welcome back!",
+          timestamp: "2026-04-19T10:01:00.000Z",
+        },
+      ],
+    });
+
+    render(
+      <EmbedClient
+        agent="shopping_assistant"
+        guestId={GUEST}
+        accountUlid={ACCOUNT}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-message-assistant")).toHaveTextContent(
+        "Welcome back!"
+      );
+    });
+    expect(screen.queryByTestId("chat-message-user")).toBeNull();
   });
 
   it("falls back to an empty chat when hydration fails for an onboarded session", async () => {

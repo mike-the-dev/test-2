@@ -2,6 +2,7 @@
 
 import { Spinner } from "@heroui/react";
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import { ulid } from "ulid";
 
 import { BudgetSplash } from "@/components/budget-splash";
 import { ChatErrorCard } from "@/components/chat-error-card";
@@ -11,9 +12,33 @@ import {
   completeOnboarding,
   createSession,
   fetchSessionMessages,
+  sendMessage,
+  SESSION_KICKOFF_CONTENT,
 } from "@/lib/api";
 import { ensureGuestId } from "@/lib/guest-id";
+import { dedupeToolOutputsWithinTurn } from "@/lib/tool-renderers";
 import type { ChatMessage, SessionInfo } from "@/types/chat";
+
+const kickoffStorageKey = (sessionUlid: string): string =>
+  `instapaytient_kickoff_${sessionUlid}`;
+
+const hasKickoffFired = (sessionUlid: string): boolean => {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(kickoffStorageKey(sessionUlid)) === "1";
+  } catch {
+    return false;
+  }
+};
+
+const markKickoffFired = (sessionUlid: string): void => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(kickoffStorageKey(sessionUlid), "1");
+  } catch {
+    // Safari private mode, storage disabled — swallow; guard is best-effort only.
+  }
+};
 
 /**
  * Server-authoritative state machine for the embedded chat flow:
@@ -23,6 +48,8 @@ import type { ChatMessage, SessionInfo } from "@/types/chat";
  *   visitor needs to pick a budget before the agent has enough context.
  * - ``hydrating`` — onboarded session found; fetching prior turns before
  *   handing control to ``ChatPanel``.
+ * - ``kickoff`` — post-onboarding; waiting on the ``__SESSION_KICKOFF__``
+ *   response that seeds the chat with the agent's opening greeting.
  * - ``chat`` — everything resolved, ``ChatPanel`` renders with any hydrated
  *   history.
  * - ``error`` — network / server failure at any step. Retryable.
@@ -31,6 +58,7 @@ type EmbedState =
   | { status: "loading" }
   | { status: "splash"; session: SessionInfo }
   | { status: "hydrating"; session: SessionInfo }
+  | { status: "kickoff"; session: SessionInfo }
   | {
       status: "chat";
       session: SessionInfo;
@@ -118,11 +146,19 @@ export const EmbedClient = ({
             setState({
               status: "chat",
               session,
-              initialMessages: messages.map((message) => ({
-                id: message.id,
-                role: message.role,
-                content: message.content,
-              })),
+              initialMessages: messages
+                .filter(
+                  (message) =>
+                    !(
+                      message.role === "user" &&
+                      message.content === SESSION_KICKOFF_CONTENT
+                    )
+                )
+                .map((message) => ({
+                  id: message.id,
+                  role: message.role,
+                  content: message.content,
+                })),
             });
           } catch (err) {
             if (cancelled || controller.signal.aborted) return;
@@ -170,25 +206,73 @@ export const EmbedClient = ({
       setState({ status: "hydrating", session });
 
       const submitOnboarding = async (): Promise<void> => {
+        let updated: SessionInfo;
         try {
-          const updated = await completeOnboarding(
+          updated = await completeOnboarding(
             session.sessionUlid,
             { budgetCents },
             { signal: controller.signal }
           );
-          if (controller.signal.aborted) return;
-          // Fresh onboarding — no prior turns to hydrate, go straight to chat.
-          setState({
-            status: "chat",
-            session: updated,
-            initialMessages: [],
-          });
         } catch (err) {
           if (controller.signal.aborted) return;
           console.error("[instapaytient] onboarding failed", {
             status: err instanceof ChatApiError ? err.status : "unknown",
           });
           setState({ status: "error", message: messageFromApiError(err) });
+          return;
+        }
+        if (controller.signal.aborted) return;
+
+        // Frontend guard — if the kickoff has already fired for this session
+        // ULID (double-click, state replay), skip and drop into empty chat.
+        if (hasKickoffFired(updated.sessionUlid)) {
+          setState({ status: "chat", session: updated, initialMessages: [] });
+          return;
+        }
+
+        setState({ status: "kickoff", session: updated });
+
+        try {
+          const response = await sendMessage(
+            {
+              sessionUlid: updated.sessionUlid,
+              message: SESSION_KICKOFF_CONTENT,
+            },
+            { signal: controller.signal }
+          );
+          if (controller.signal.aborted) return;
+
+          // Set the guard AFTER success. A failed kickoff leaves no trace so a
+          // retry (page reload) can try again instead of being stuck.
+          markKickoffFired(updated.sessionUlid);
+
+          const deduped =
+            response.toolOutputs !== undefined
+              ? dedupeToolOutputsWithinTurn(response.toolOutputs)
+              : undefined;
+
+          const greeting: ChatMessage = {
+            id: ulid(),
+            role: "assistant",
+            content: response.reply,
+            ...(deduped !== undefined && deduped.length > 0
+              ? { toolOutputs: deduped }
+              : {}),
+          };
+
+          setState({
+            status: "chat",
+            session: updated,
+            initialMessages: [greeting],
+          });
+        } catch (err) {
+          if (controller.signal.aborted) return;
+          console.error("[instapaytient] kickoff failed", {
+            status: err instanceof ChatApiError ? err.status : "unknown",
+          });
+          // Kickoff is a nice-to-have — if it fails, visitor still gets a
+          // working (empty) chat instead of an error card.
+          setState({ status: "chat", session: updated, initialMessages: [] });
         }
       };
 
@@ -197,7 +281,11 @@ export const EmbedClient = ({
     [state]
   );
 
-  if (state.status === "loading" || state.status === "hydrating") {
+  if (
+    state.status === "loading" ||
+    state.status === "hydrating" ||
+    state.status === "kickoff"
+  ) {
     return (
       <div
         className="flex flex-1 w-full items-center justify-center"

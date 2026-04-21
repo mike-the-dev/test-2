@@ -4,6 +4,7 @@ import { Avatar, Link, Spinner } from "@heroui/react";
 import { Fragment, type ReactElement } from "react";
 
 import { renderToolOutput } from "@/lib/tool-renderers";
+import { SESSION_KICKOFF_CONTENT } from "@/lib/api";
 import { extractCheckoutUrl } from "@/lib/checkout-url";
 import { SafeMarkdown } from "@/lib/markdown";
 import type { ChatMessage } from "@/types/chat";
@@ -12,8 +13,14 @@ export interface ChatMessageProps {
   message: ChatMessage;
 }
 
-export function ChatMessageView({ message }: ChatMessageProps): ReactElement {
+export function ChatMessageView({
+  message,
+}: ChatMessageProps): ReactElement | null {
   const isUser = message.role === "user";
+  // Belt-and-suspenders: the embed-client filters the hydration path and the
+  // kickoff never flows through ChatPanel.submit(), but if a user message
+  // carrying the kickoff sentinel ever lands in state, don't render it.
+  if (isUser && message.content === SESSION_KICKOFF_CONTENT) return null;
   const checkoutUrl =
     !isUser && !message.pending ? extractCheckoutUrl(message.content) : null;
 

@@ -142,6 +142,21 @@ describe("ChatMessageView", () => {
     expect(screen.queryByTestId("cart-preview-card")).toBeNull();
   });
 
+  it("suppresses a user message carrying the session kickoff sentinel", () => {
+    const { container } = render(
+      <ChatMessageView
+        message={{
+          id: "u-kickoff",
+          role: "user",
+          content: "__SESSION_KICKOFF__",
+        }}
+      />
+    );
+
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByTestId("chat-message-user")).toBeNull();
+  });
+
   it("does not render tool outputs for registered stubs that return null", () => {
     const stubOutput = {
       toolName: "save_user_fact",
