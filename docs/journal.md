@@ -36,6 +36,31 @@ At the end of a working session — or after shipping a meaningful milestone —
 
 ---
 
+## 2026-04-20 (night) — Cart preview card + generic `tool_outputs` renderer registry
+
+**Goal:** wire the backend's new generic `tool_outputs` channel into the chat UI and ship the first concrete renderer — a structured cart preview card that appears inline with the assistant turn that produced it, replacing the prose-only cart summary with a qty × variant × unit price × line-total view plus a cart total footer.
+
+**What changed:**
+- Extended `SendMessageResponse` with optional `toolOutputs?: ToolOutput[]`. Added a per-turn `ToolOutput` envelope (`toolName`, `content`, `isError?`) and a typed `CartPreviewPayload` (line items with ULID `lineId`, `serviceId`, `imageUrl`, `variant`/`variantLabel`, `quantity`, `price`, `total`, plus `cartTotal` in cents).
+- New `src/lib/tool-renderers.tsx` — a renderer registry (`tool_name → React component`) with a single public `renderToolOutput(output)` dispatch. `preview_cart` is registered; `save_user_fact`, `collect_contact_info`, `list_services`, `generate_checkout_link` are registered as explicit no-op stubs so adding future renderers is a two-file change (new component + one registry entry) with no churn in `ChatPanel` or `ChatMessageView`.
+- New `src/components/cart-preview-card.tsx` — HeroUI-palette-consistent card with `bg-surface-secondary` rounded-2xl, line-item rows (thumbnail + name + optional variant label + qty/unit/line total), a cart total footer, and fail-soft branches for parse failure, `is_error: true`, and empty `lines[]`. Amounts formatted via a module-scoped `Intl.NumberFormat('en-US', { currency: 'USD' })` — hard-coded USD for v1.
+- `ChatPanel.submit()` now applies a within-turn dedupe (`dedupeToolOutputsWithinTurn`, per-tool `dedupeWithinTurn: true` flag for `preview_cart`) and a cross-turn strip (when a new `preview_cart` arrives, `preview_cart` entries on prior assistant messages are filtered out; if the resulting `toolOutputs` is empty, it becomes `undefined`, never `[]`).
+- Backend normalization (snake_case → camelCase) is private to `src/lib/api.ts` via an internal `SendMessageWireResponse` type. Absent `tool_outputs` → `toolOutputs` is `undefined`, not `[]`, so the render guard stays a cheap truthy check. Public signature of `sendMessage` is unchanged.
+
+**Decisions worth remembering:**
+- **Two-file extension point.** Registry lives at `src/lib/tool-renderers.tsx`, not `src/features/toolOutputs/`. A feature folder would have been four stub files and a hollow `index.ts` for a cross-cutting concern that isn't a product feature. Trigger for migration: five or more distinct renderers.
+- **Dedupe at the state boundary, not the view.** Within-turn + cross-turn dedupe both happen inside `ChatPanel.submit()` so `messages` is the canonical source of truth. `ChatMessageView` trusts what it receives and renders without a full-array scan. When the backend shipped server-side within-turn dedupe two hours after this landed (commit 395bc357), the frontend logic became redundant-but-correct — planned as a separate cleanup PR rather than a hot-fix, since "works as-is" trumps "fewest lines" for a security-adjacent surface.
+- **`preview_cart` renderer owns its error state; registry never swallows `is_error`.** The registry is a pure dispatch table; each renderer decides how to present its own error. A cart error card and a (future) contact-form error card shouldn't share copy.
+- **Prose-based "Open checkout" CTA stays.** `generate_checkout_link` is registered as a stub for now; the button continues to come from `extractCheckoutUrl()` scraping the prose. The robust-long-term move is pulling the URL from the tool output — deferred to a follow-up, no behavior change today.
+- **Live E2E caught only one gap.** Cross-turn strip couldn't be exercised because the shopper agent refuses to edit the cart after `generate_checkout_link` fires. Unit tests cover it; the gap is a backend-policy artifact, not a frontend concern.
+
+**Next:**
+- Cleanup PR: (a) delete `dedupeToolOutputsWithinTurn` + the `dedupeWithinTurn` flag now that the backend enforces it server-side; (b) migrate the `<Fragment key>` from `${index}-${output.toolName}` to `output.callId` (new wire field, stable per tool call). Both purely redundant-surface reduction.
+- Surface historic `tool_outputs` through the hydration endpoint so returning visitors see their previously-previewed cart. Today the GET `/messages` response is prose-only; a reopened widget shows no card until the next `preview_cart` fires. Acceptable for v1.
+- Interactive cart card (edit qty, remove line) once the backend exposes cart-mutation tools.
+
+---
+
 ## 2026-04-20 (late) — M4: server-side Referer authorization closes the snippet-theft vector
 
 **Goal:** stop an attacker from copying a legit customer's `<script data-account-ulid>` tag onto a hostile domain and mounting a fully-functional widget that bills to the legitimate customer. Until this landed, the only authentication flowing with the embed was a public ULID shipped in the snippet — trivially copyable.
