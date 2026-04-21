@@ -1,227 +1,210 @@
 TASK OVERVIEW
-Task name: M4 — Server-side Referer authorization for `/embed`
+Task name: Cart preview card — wire up structured `tool_outputs` and render `preview_cart` inline with assistant turns.
 
 Objective:
-Close the embed-snippet-theft attack vector where someone can view-source on a legit customer site, copy the `<script data-account-ulid="A#...">` tag to a hostile domain (`evil.com`), and have a fully functional chat widget billed to and impersonating the legitimate customer. Today nothing on the frontend stops this — the iframe loads, the session creates, conversations flow, every message is written to the legitimate customer's session history and counts against their LLM budget.
-
-The backend has already shipped the server-side defense: a `POST /chat/web/embed/authorize` endpoint that takes `{ accountUlid, parentDomain }` and returns `{ authorized: boolean }` against the account's `allowed_embed_origins` DynamoDB list (208/208 tests passing, three commits on master). This milestone wires up the frontend half — `/embed` must become a Server Component that reads the browser-set `Referer` header on the iframe's initial load, extracts the parent-page hostname, calls the authorize endpoint, and renders an error card instead of the widget when authorization fails or cannot be determined.
-
-This is **frontend only**. Zero backend changes. The authorize endpoint is production-ready and live.
+The backend has split the old checkout tool into two tools — `preview_cart` and `generate_checkout_link` — and added a generic `tool_outputs` array to the `POST /chat/web/messages` response so any agent can return structured tool payloads alongside its prose reply. Wire the frontend to:
+1. Receive and type the new `tool_outputs` field on `SendMessageResponse`.
+2. Route each entry through a per-tool renderer registry so adding future tools is a one-file change, not a contract change.
+3. Ship one concrete renderer: a `CartPreviewCard` that renders the `preview_cart` payload (line items × qty × variant × unit price × line total, plus cart total) inline with the assistant message in the chat stream.
+4. Silently skip any tool name we don't have a renderer for yet (`save_user_fact`, `collect_contact_info`, `list_services`, `generate_checkout_link` — the URL for `generate_checkout_link` continues to be extracted from the prose reply, unchanged from today).
+5. Handle the error flag (`is_error: true`) on a `preview_cart` entry with a user-facing error state on the card.
+6. When multiple `preview_cart` entries fire in a single turn (unusual), render the latest one only.
+7. When `tool_outputs` is absent (no tool fired), preserve today's behavior exactly.
 
 Relevant context:
-- **Stack:** Next.js 16 App Router, TypeScript strict, Tailwind v4, HeroUI v3. Vitest + RTL + jsdom for unit tests. Playwright MCP available for live verification. Scaffold + M3 splash + session contract upgrade are all landed on master (see `docs/journal.md`).
-- **Current `/embed/page.tsx` is a client component** (`"use client"` at the top) because it uses `useSearchParams` and drives a 5-state machine (`loading | splash | hydrating | chat | error`). HTTP request headers including `Referer` are only visible server-side via `import { headers } from "next/headers"`. This mandates a restructure: the entry page becomes a Server Component that handles authorization; the existing state-machine logic moves into a child client component that receives the search-param data as props.
-- **The widget script already sets `iframe.referrerpolicy = "origin"`** (shipped earlier). The browser-set `Referer` on the iframe's initial load will reliably carry the parent page's origin even if the host page has restrictive `Referrer-Policy` meta tags. JS on the parent page cannot override it. Server-side Referer reading is the ground-truth check we've been preparing for.
-- **Authorize endpoint — backend contract (locked):**
-  - `POST https://<backend>/chat/web/embed/authorize`
-  - Body: `{ accountUlid: string, parentDomain: string }` — `accountUlid` is the full `A#`-prefixed form (same shape flowing through `POST /chat/web/sessions` today); `parentDomain` is the bare hostname, no scheme, no port, no path (e.g. `"customer-blog.com"`, `"localhost"`).
-  - Response: always `200 { authorized: boolean }`. A `false` value is a deliberate deny, not an error. The frontend branches on the boolean; the HTTP status is only used for the usual fail-closed handling of non-2xx or network errors.
-- **Fail-closed semantics everywhere** (every case converges on the error card):
-  - `Referer` header missing or empty
-  - `Referer` present but not parseable by `new URL(...)` (including `about:blank`-style inputs)
-  - `accountUlid` missing from the incoming URL's search params
-  - Authorize fetch errors out (network failure, non-2xx, 3-second timeout)
-  - Response body missing or malformed (`typeof body.authorized !== "boolean"`)
-  - Authorize returns `{ authorized: false }`
-  - Any other unexpected exception during SSR
-- **Dev flow:** the operator will manually add `"localhost"` to the account's `allowed_embed_origins` DynamoDB list for local testing. The Referer parser must strip the port (`localhost:3000` → `localhost`) so entries match the allowlist. `new URL(referer).hostname` does this natively (hostname excludes port; host includes it).
-- **Timeout posture:** Server Components inherit no default fetch timeout. If the backend hangs, the iframe hangs. Cap the authorize call at 3 seconds via `AbortSignal.timeout(3000)`; a timeout is a fail-closed event.
-- **Denial logging:** every fail-closed branch emits a `console.error` in a structured shape so Next.js server logs are auditable. Shape: `{ reason, parentDomain?, accountUlid? }`. Do not log full URLs or PII. `accountUlid` is safe (it's the public key shipped in the integrator snippet).
-- **Error card copy:** primary *"This site isn't authorized to embed this widget."*; secondary *"Contact the site owner if you believe this is a mistake."* Deliberately neutral, no technical language. No retry button — authorization denial is not end-user-retryable. Product can tune copy later.
-- **Assumption on endpoint auth:** the authorize endpoint is assumed open (no shared secret, no HMAC) — consistent with `POST /chat/web/sessions` which relies on origin-based CORS. If the backend later adds signing, it's additive; no redesign needed on our side.
-- **Out of scope for this milestone:**
-  - CSP `frame-ancestors` header — scheduled as a separate backend commit
-  - Admin UI for `allowed_embed_origins` — populated manually in DynamoDB for now
-  - Client-side localStorage hint to skip the SSR check — server is authoritative; no optimistic bypass
-  - Any change to chat-flow behavior (session, messages, onboarding, splash) — the authorization gate runs *before* any of that
+- Repo: `ai-chat-session-frontend` (Next.js App Router, HeroUI v3, Tailwind, colocated `*.test.tsx` tests). This is the iframe-embedded chat widget; its backend sibling is `ai-chat-session-api`.
+- Entry point: `src/app/embed/page.tsx` (Server Component, Referer-gated) → `src/app/embed/embed-client.tsx` (5-state machine: loading → splash | hydrating → chat | error). The chat itself lives in `src/components/chat-panel.tsx`, which owns the `messages: ChatMessage[]` state and calls `sendMessage()` from `src/lib/api.ts`.
+- Message rendering: `src/components/chat-message.tsx` renders a single `ChatMessage`. Today it already has precedent for attaching structured UI to an assistant turn — it extracts a checkout URL from the prose via `src/lib/checkout-url.ts` and renders an "Open checkout" button under the bubble. The cart card is the same pattern, but driven by structured `tool_outputs` instead of prose scraping.
+- Type source of truth: `src/types/chat.ts`. `ChatMessage`, `ChatRole`, `SendMessageResponse` live here. The card payload type (`CartPreviewPayload`) and the generic `ToolOutput` envelope belong here.
+- Wire layer: `src/lib/api.ts` currently returns `Promise<SendMessageResponse>` from `sendMessage()`. That return type needs to carry optional `tool_outputs` through; the fetch/error logic itself does not change.
+- Architectural constraints (per `docs/agent/architecture/feature-folder-architecture.md` + `docs/agent/engineering/global-standards.md`):
+  - Arrow functions everywhere, no `function` declarations except where framework-forced.
+  - Semicolons mandatory.
+  - Single-line `if` statements with no braces when only one statement.
+  - `async/await` with `try/catch/finally` — no Promise chaining.
+  - Full descriptive parameter names (never `a`, `b`, `res`, `val`).
+  - Validate/normalize at boundaries (inside `api.ts` or the renderer registry), not deep in domain logic.
+  - Public / route-level functions get the standard JSDoc block with `@author`, `@editor`, `@lastUpdated`, `@name`, `@description`, `@param`, `@returns`. Author + editor signature is `mike-the-dev (Michael Camacho)`.
+  - Tests colocated (`*.test.ts(x)` next to the file under test). Use `describe` / `it` (never `test`), Arrange → Act → Assert, at most two describe levels.
+- Wire-level contract (new, from backend hand-off):
+  ```
+  POST /chat/web/messages → {
+    reply: string;
+    tool_outputs?: Array<{
+      tool_name: string;
+      content: string;            // raw JSON; parse based on tool_name
+      is_error?: boolean;
+    }>;
+  }
+  ```
+  `tool_outputs` is present only when at least one tool fired during the turn. Absent array → behave exactly as before.
+- `preview_cart` payload shape (parse `content` as this when `tool_name === "preview_cart"`):
+  ```
+  type CartPreviewPayload = {
+    cart_id: string;
+    item_count: number;          // sum of quantities
+    currency: string;            // "usd"
+    cart_total: number;          // cents
+    lines: Array<{
+      line_id: string;           // ephemeral; regenerated every preview
+      service_id: string;        // includes the "S#" prefix
+      name: string;
+      category: string;
+      image_url: string;
+      variant: string | null;    // "<variantId>:<optionId>" or null
+      variant_label: string | null;
+      quantity: number;
+      price: number;             // unit price, cents
+      total: number;             // price * quantity, cents
+    }>;
+  };
+  ```
+- Flow the visitor experiences end-to-end:
+  1. Splash → budget → chat.
+  2. Visitor gathers items. Agent calls `preview_cart`. Response carries the payload; frontend renders the card. Agent's prose says something like "here's your cart — does this look right?"
+  3. Visitor confirms or asks to change. Agent re-calls `preview_cart` with updated items (same `cart_id`, new `line_id`s). Frontend renders the latest card.
+  4. Visitor confirms final → agent calls `generate_checkout_link` → response includes `{ tool_name: "generate_checkout_link", content: '{"checkout_url":"...","cart_id":"..."}' }` alongside prose that also contains the URL. Today's URL-from-prose extraction continues to work; pulling from `tool_outputs` is more robust but is not the scope of this task (can be a follow-up).
+- History hydration (`GET /chat/web/sessions/:ulid/messages`) does NOT include `tool_outputs` today. A returning visitor mid-conversation will not see a previously-rendered cart card until the next `preview_cart` fires. Acceptable for v1; flagged for future work.
+- Backend status: `master`, commit `639c31e1`, 211/211 tests passing. Ready for frontend wiring anytime.
 
 
 STEP 1 — ARCHITECTURE PLANNING
-Use the arch-planner agent to analyze the current `/embed` structure and produce a structured implementation plan.
+Use the arch-planner agent to analyze the codebase and produce a structured implementation plan.
 
 Task specifics for this plan:
+- Extend `SendMessageResponse` in `src/types/chat.ts` to include an optional `toolOutputs?: ToolOutput[]` field. Decide on the wire-key shape: the backend sends `tool_outputs` (snake_case). Choose one of two strategies and justify: (a) keep snake_case on the TS type to mirror the wire exactly; (b) transform to camelCase at the API boundary inside `api.ts`. Global standard is "validate/normalize at boundaries," which points at (b). Document the choice.
+- Introduce a `ToolOutput` envelope type (`toolName`, `content`, `isError?`) and a `CartPreviewPayload` type (all fields from the hand-off spec, camelCased if we chose (b)).
+- Decide where the renderer registry lives. Candidate: `src/lib/tool-renderers.ts` (colocated with other cross-cutting lib helpers like `checkout-url.ts`) or `src/components/tool-outputs/` (a components subfolder that future renderers can share). Pick one and justify. The feature-folder architecture standard would push toward `src/features/toolOutputs/` if this were heavier, but for a thin registry + one renderer, a lib module + a single component file is proportionate. Call that tradeoff out.
+- Decide how a tool output attaches to a `ChatMessage`. Options:
+  (i) Add an optional `toolOutputs?: ToolOutput[]` field on `ChatMessage` itself — the outputs belong to the assistant turn they were produced in, so this is the most natural shape. `ChatPanel.submit()` populates it from the `sendMessage()` response when the pending assistant message resolves.
+  (ii) Keep `ChatMessage` pure prose and store a separate `toolOutputsById: Record<string, ToolOutput[]>` map in `ChatPanel` state.
+  Recommend (i) for locality — the renderer lives in `ChatMessageView`, so it can read straight off the message prop. Document the call.
+- Define the renderer registry interface: `type ToolRenderer = (output: ToolOutput) => ReactElement | null;` plus `const toolRenderers: Record<string, ToolRenderer>`. Registered entries today: `preview_cart`. Unregistered names resolve to `null` and render nothing. `is_error: true` on a `preview_cart` entry: the `preview_cart` renderer handles it internally (renders an error state card) — the registry should NOT swallow errors, because an errored entry still carries a recognized `tool_name`.
+- Define the "render the latest only" rule for multiple `preview_cart` entries in a single turn. Decide: dedupe in `ChatPanel.submit()` before writing to state, or dedupe in the renderer path inside `ChatMessageView`? Recommend dedupe at the boundary (`ChatPanel.submit()`) so state is canonical — the renderer trusts it received the latest. Document.
+- Identify exactly which files change:
+  - `src/types/chat.ts` — new types, extend `SendMessageResponse` and `ChatMessage`.
+  - `src/lib/api.ts` — response normalization (snake_case → camelCase if chosen; optional `toolOutputs` carry-through).
+  - `src/lib/tool-renderers.ts` (new) — registry + parsing helpers.
+  - `src/components/cart-preview-card.tsx` (new) — the `preview_cart` renderer component.
+  - `src/components/chat-panel.tsx` — attach `toolOutputs` to the resolved assistant message, apply "latest-preview-only" dedupe.
+  - `src/components/chat-message.tsx` — iterate rendered outputs below the assistant bubble, alongside today's checkout-URL CTA (both can coexist).
+  - Colocated tests for each new/modified file.
+- Risks / edge cases to enumerate in the plan:
+  - Malformed `content` JSON → `JSON.parse()` throws. Wrap and fail-soft (render nothing or a neutral error) — do NOT throw into the React tree.
+  - Unknown currency codes — backend ships `"usd"` today. Render dollars assuming USD for v1; document the assumption.
+  - Empty `lines` array (should not happen but possible) — render "Cart is empty" gracefully.
+  - `variant_label` null → show name only; `variant_label` present → show "Name — variant_label".
+  - Cart card should NOT render in the history hydration path because the hydration endpoint does not return `tool_outputs`. Confirm `ChatMessage`s built from `GetSessionMessagesResponse` leave `toolOutputs` undefined, and the renderer treats undefined as "nothing to render."
+- Testing strategy:
+  - Unit: `tool-renderers.test.ts` — parseToolOutputContent happy path + malformed JSON + unknown tool; registry lookup + miss.
+  - Unit: `cart-preview-card.test.tsx` — renders lines, totals, variant label with/without; error state when `is_error: true`; empty-lines defensive state.
+  - Unit: `chat-panel.test.tsx` (extend) — when `sendMessage` resolves with `toolOutputs`, the resolved assistant message carries them; when multiple `preview_cart` entries arrive, only the last is kept.
+  - Unit: `chat-message.test.tsx` (extend) — renders the cart card inline with the bubble when the message has a `preview_cart` output; does not render it for user messages; renders nothing for unknown tool names.
+  - Unit: `api.test.ts` (extend) — `sendMessage()` normalizes `tool_outputs` → `toolOutputs` on the response (if we pick strategy (b)); absent field resolves to `undefined` (not `[]`) to preserve the existing narrow.
+  - E2E (Playwright live, in Step 4's runner context): splash → budget → chat → commit items → cart card renders with qty × name × variant × unit price × line total + total → visitor confirms → checkout URL appears and opens the correct live cart.
 
-1. **Current state audit** — confirm what `src/app/embed/page.tsx` looks like today: the `"use client"` directive, the 5-state machine (`loading | splash | hydrating | chat | error`), the `useSearchParams` usage, the `Suspense` wrapper at the default export, the session-create / onboarding / hydration calls. Identify everything that must remain client-bound (state, effects, event handlers) vs. everything that can move server-side (search-param reads can happen in either layer; server is simpler once the page becomes async).
+Requirements for the plan:
+- identify affected files/modules
+- outline step-by-step implementation order
+- note dependencies and architectural considerations
+- list risks or edge cases
+- define testing strategy
 
-2. **Proposed file split:**
-   - `src/app/embed/page.tsx` — becomes an `async` Server Component default export. No `"use client"`. Reads `headers()` and awaits `props.searchParams` (Next.js 16 makes searchParams a Promise). Performs Referer parsing + authorize call. Branches: error card or passes props to the client widget.
-   - `src/app/embed/embed-client.tsx` — new file. Hosts the existing client state machine with `"use client"` at the top. Accepts `{ agent, guestId, accountUlid }` as props instead of reading `useSearchParams`. Keeps the existing state machine, API calls, splash/hydration/chat rendering. Drops the `Suspense` wrapper (no longer needed — the server has params synchronously).
-   - `src/app/embed/embed-authorization-error.tsx` — new file, simple JSX-returning component. Renders the neutral deny card. No retry button. Uses HeroUI `Card` primitives to match `ChatErrorCard`'s visual weight. Carries `data-testid="embed-authorization-error"`.
-   - `src/lib/referer.ts` — new file. Exports `parseRefererHostname(referer: string | null): string | null`. Pure function, wrapped in try/catch around `new URL()`. Strips port. Returns `null` on any parse failure or empty input. Unit-testable without DOM or network.
-   - `src/lib/api.ts` — add `authorizeEmbed(request, init?): Promise<EmbedAuthorizeResponse>`. Honors `init.signal`. POST + JSON + `Content-Type`.
-   - `src/types/chat.ts` — add `EmbedAuthorizeRequest` and `EmbedAuthorizeResponse` types.
-
-3. **Server Component flow:**
-   ```
-   page.tsx (async, Server Component)
-     ↓ const hdrs = await headers(); const referer = hdrs.get("referer");
-     ↓ const params = await props.searchParams;
-     ↓ const parentDomain = parseRefererHostname(referer);
-     ↓ if (!parentDomain || !params.accountUlid) → deny("missing_*") → <EmbedAuthorizationError />
-     ↓ try {
-     ↓   const { authorized } = await authorizeEmbed(
-     ↓     { accountUlid, parentDomain },
-     ↓     { signal: AbortSignal.timeout(3000) }
-     ↓   );
-     ↓ } catch (err) → deny("authorize_failed", { …err }) → <EmbedAuthorizationError />
-     ↓ if (!authorized) → deny("authorize_denied", { parentDomain, accountUlid }) → <EmbedAuthorizationError />
-     ↓ return <EmbedClient agent={...} guestId={...} accountUlid={...} />
-   ```
-
-4. **Client component adjustments:**
-   - `embed-client.tsx` accepts props `{ agent: string; guestId: string | null; accountUlid: string }` — all pre-validated by the server layer.
-   - Drops `useSearchParams`; drops the default-export `Suspense` wrapper.
-   - All state-machine logic, effects, session calls, splash/hydration/chat rendering stay byte-identical except for the prop-vs-param input swap.
-
-5. **Route segment config:**
-   - `export const dynamic = "force-dynamic"` on `page.tsx`. The `headers()` call already opts in to dynamic rendering, but the explicit directive prevents a future refactor from accidentally re-staticizing the route.
-   - `src/app/widget.js/route.ts` unchanged — separate route.
-
-6. **Package additions:** none. No new runtime or dev deps.
-
-7. **Test plan (~8 new tests):**
-   - `src/lib/referer.test.ts` — `parseRefererHostname`: 6 cases (https URL, http URL, localhost with port, invalid string, empty, null, `about:blank`, IP address).
-   - `src/lib/api.test.ts` — `authorizeEmbed`: 3 cases (correct URL + body + headers on 200 with `authorized: true`, throws `ChatApiError` on non-2xx, throws on malformed body shape).
-   - `src/app/embed/embed-client.test.tsx` — renamed from `page.test.tsx`; all existing state-machine tests (5 tests) still pass with props in place of query-param mocks.
-   - Server component integration — skipped at unit level. Covered by helper unit tests + a Playwright live-verification pass.
-
-8. **Risks / edge cases:**
-   - Corporate proxies or privacy extensions strip Referer → error card. Documented behavior; no workaround on our side.
-   - Referer is `about:blank` or `data:` in sandboxed contexts → `parseRefererHostname` returns empty-ish hostnames; treat consistently as unauthorized.
-   - Next.js fetch memoization — `cache: "no-store"` on the authorize call prevents any dedup/caching across requests.
-   - Build output flips `/embed` from `○` (static) to `ƒ` (dynamic). Expected.
-   - Server-side fetch to the backend doesn't carry the browser's Referer — the backend consumes `parentDomain` from the body (trusts the Next.js server that derived it). That's intentional and safe.
-   - Hostname canonicalization: browsers lowercase hostnames; add a defensive `.toLowerCase()` anyway to eliminate future edge cases if the backend's allowlist is case-sensitive.
-
-9. **Implementation order (strictly sequential):**
-   1. Types (`types/chat.ts`) + referer helper + test
-   2. `authorizeEmbed` in `api.ts` + test
-   3. `EmbedAuthorizationError` component
-   4. Extract existing `/embed/page.tsx` client logic into `embed-client.tsx`; rename test
-   5. Rewrite `/embed/page.tsx` as async Server Component
-   6. Run all gates (`tsc`, `npm test`, `npm run build`)
-   7. Live-verify via Playwright against dev backend
-
-Output: a written plan (no code yet). Pause for user review/approval before Step 2.
+Pause after producing the plan so I can review and approve it.
 
 
 STEP 2 — IMPLEMENTATION
-Use the code-implementer agent to execute the approved plan.
+Use the code-implementer agent to implement the approved plan.
 
-Implementation details:
+Implementation details for this task:
+- Follow the file-by-file order the arch-planner locked in. Expect roughly: types → api normalization → renderers lib → cart-preview-card component → chat-panel state wiring → chat-message render hook-in.
+- Keep the `preview_cart` renderer visually consistent with the existing M3 HeroUI v3 chat UI:
+  - Rounded card, `bg-surface-secondary`, same rounding idiom as the assistant bubble but slightly denser horizontal padding.
+  - Each line row: small thumbnail (`image_url`) if present, name in primary text, variant label in muted text, qty × unit price on the right, line total beneath.
+  - Footer row: "Total" label + `cart_total` formatted as USD.
+  - Currency formatting via `Intl.NumberFormat('en-US', { style: 'currency', currency: payload.currency.toUpperCase() })`, dividing cents by 100.
+  - No quantity editing, no remove buttons — the card is display-only. Future interactions are out of scope.
+- For the error state (`is_error: true`): render a neutral card with the copy "We hit a problem previewing your cart — try asking again." No retry button (the agent re-previews via another chat turn).
+- Do not touch `src/lib/checkout-url.ts` or the existing "Open checkout" button render path in `chat-message.tsx` — the URL extraction from prose stays. `generate_checkout_link` output is silently ignored by the registry for now, per the hand-off.
+- When attaching `toolOutputs` to the resolved assistant message inside `ChatPanel.submit()`, apply the "latest preview only" rule: filter the array down to the last entry whose `toolName === "preview_cart"` plus all other non-preview entries (in original order). This keeps the data structure honest for future non-preview renderers that might want to show all instances.
+- Do NOT modify `src/lib/api.ts`'s public function signatures — only update the types they return. Keep normalization logic private to the module.
+- Add JSDoc blocks (per global standards) on: the new exported renderer registry, the new `CartPreviewCard` component, and any new public helpers in `api.ts` or `tool-renderers.ts`.
+- Tests must be colocated. Use existing test files as the style reference (`src/components/chat-message.test.tsx`, `src/lib/api.test.ts`).
 
-- **Server Component must be `async`** and use `await headers()` + `await props.searchParams` — Next.js 16 makes `searchParams` a Promise. Do not regress to Next 14/15 patterns.
-- **Authorize fetch must include `cache: "no-store"` AND `signal: AbortSignal.timeout(3000)`.** Both non-negotiable. Without `cache: "no-store"`, decisions can be dedup'd across requests. Without the timeout, a slow backend hangs the iframe.
-- **Fail-closed helper** — extract a single `denyAuthorization(reason: string, details?: Record<string, unknown>): ReactElement` function at the top of `page.tsx`. Every deny branch calls it. The helper logs the structured deny event (`console.error("[instapaytient] embed authorization denied", { reason, ...details })`) and returns the `<EmbedAuthorizationError />` element. Consistent logging, trivial auditing.
-- **`parseRefererHostname` contract:**
-  - Input `null` or empty string → return `null`.
-  - Input not parseable by `new URL(input)` → return `null` (try/catch).
-  - Otherwise return `url.hostname.toLowerCase()` (defensive lowercase).
-  - Never throws.
-- **`authorizeEmbed` contract:**
-  - POSTs to `${chatApiUrl}/chat/web/embed/authorize` with JSON body `{ accountUlid, parentDomain }` and `Content-Type: application/json`.
-  - Honors `init.signal` (propagates `AbortSignal.timeout(3000)`).
-  - On non-2xx → throw existing `ChatApiError` with `{ status, body }`.
-  - On 2xx but malformed body (`typeof body.authorized !== "boolean"`) → throw `ChatApiError("malformed authorize response", 200, body)`.
-  - Returns `{ authorized: boolean }` on clean success.
-- **Error card** — HeroUI `Card` + `Card.Header` + `Card.Content`. Layout matches existing `ChatErrorCard`. Copy verbatim:
-  - Primary line: *"This site isn't authorized to embed this widget."*
-  - Secondary line: *"Contact the site owner if you believe this is a mistake."*
-  - `data-testid="embed-authorization-error"` on the root Card element.
-  - No retry button.
-- **Logging shape** — every deny-path `console.error` emits an object:
-  ```ts
-  {
-    reason: "missing_referer" | "missing_account" | "parse_failed" |
-            "authorize_failed" | "authorize_denied" | "malformed_response",
-    parentDomain?: string,
-    accountUlid?: string,
-    status?: number,
-  }
-  ```
-  Do not log full URLs. Do not log headers. Do not log response bodies beyond status code.
-- **Route config** — `export const dynamic = "force-dynamic"` at the top of `page.tsx`.
-
-Hard constraints:
-- NO changes to chat flow (sessions, onboarding, messages, splash, widget.js) — the gate runs before any of that.
-- NO `any`, NO `@ts-ignore`, NO `as unknown as X` without justification.
-- NO `"use client"` in `page.tsx`, `embed-authorization-error.tsx`, `referer.ts`, or `api.ts`.
-- NO caching, memoization, or revalidation on the authorize fetch.
-- NO swallowed errors — every fail path must log before returning the error card.
-
-Output: final working code, list of files created/modified, and self-verification results (`npx tsc --noEmit`, `npm test`, `npm run build`).
+Implementation requirements:
+- follow the plan produced by the arch-planner agent
+- modify or create only the necessary files
+- respect existing architecture and coding patterns
+- focus on correctness first (style will be handled later)
 
 
 STEP 3 — STYLE REFACTOR
-Use the style-refactor agent to align the implementation with project conventions.
+Use the style-refactor agent to refactor the implementation according to the rules defined in `.claude/instructions/style-enforcer.md`.
 
-Style rules:
-- HeroUI v3 for every visual primitive in the error card (`Card`, `Card.Header`, `Card.Content`). Tailwind utilities only for layout (flex, gap, padding, text alignment).
-- TypeScript strict throughout. No `any`. No `@ts-ignore`. Use `unknown` + narrow on the authorize response body.
-- Named function exports for the Server Component (`async function EmbedPage(...)`) — match the existing `HomePage`/`EmbedBody` convention.
-- Explicit `ReactElement` / `Promise<ReactElement>` return types on exported components.
-- Imports grouped: React/Next → third-party (`@heroui/react`) → local (`@/lib/*`, `@/components/*`, `@/types/*`). Blank line between groups.
-- No unused imports.
-- `"use client"` directive lives only on `embed-client.tsx`.
-- Preserve every existing `data-testid` attribute used by tests.
-- Match the project's `const SOMETHING = "literal" as const;` convention for small inline string unions (used for `reason` codes).
+Style refactor specifics:
+- Enforce arrow-function-only across new code. No `function` declarations, no `function` expressions, except where a framework API demands one.
+- Enforce semicolons on every statement where optional.
+- Enforce single-line `if` with no braces when the body is one statement. Example: `if (!content) return null;`
+- Enforce `async/await` + `try/catch/finally`. Replace any `.then()` / `.catch()` / `.finally()` that may have slipped in.
+- Enforce full descriptive parameter names. No `a`, `b`, `x`, `res`, `val`, `obj`, `e` (other than event handlers where the existing codebase already uses `e` — match the surrounding file's convention).
+- Verify JSDoc blocks on public exports include `@author`, `@editor`, `@lastUpdated` (YYYY-MM-DD = 2026-04-20), `@name`, `@description`, `@param`, `@returns`, with author + editor set to `mike-the-dev (Michael Camacho)`.
+- Check defensive-programming rule: validation sits at the API boundary (inside `api.ts` or the registry parse step), not scattered across renderer internals. If renderer internals are doing type guards that should have been handled at the boundary, push them back.
+- Keep functions single-purpose. If a utility is doing both "parse content JSON" and "look up renderer," split.
 
-Do NOT:
-- Change functionality or behavior
-- Rename files the plan specified
-- Collapse the helper split (`parseRefererHostname` and `authorizeEmbed` stay separate from `page.tsx`)
-- Remove any `data-testid` attributes
-
-After refactor, `tsc`, `npm test`, and `npm run build` must all still be green.
+Style requirements:
+- apply all rules from style-enforcer.md
+- improve readability, structure, and consistency
+- align code with project conventions and standards
+- do not change functionality or logic
+- do not introduce new behavior
 
 
 STEP 4 — TEST EXECUTION
-Use the test-suite-runner agent to run the full gate.
+Use the test-suite-runner agent to execute the project's test suite.
 
-Commands:
-1. `npm test` — expect 43 existing tests + ~8 new ones = ~51 total.
-2. `npx tsc --noEmit` — zero errors.
-3. `npm run build` — green. Route output should now show `/embed` as `ƒ` (dynamic) instead of `○` (static). Other routes (`/`, `/_not-found`, `/widget.js`) stay as-is.
+Testing context for this task:
+- Run the repo's standard Jest / Vitest command (whatever `package.json` defines — likely `npm test` or `pnpm test`). Inspect `package.json` before running to confirm.
+- Expected passing surface includes the new colocated tests:
+  - `src/lib/tool-renderers.test.ts`
+  - `src/components/cart-preview-card.test.tsx`
+  - Extended `src/components/chat-panel.test.tsx`
+  - Extended `src/components/chat-message.test.tsx`
+  - Extended `src/lib/api.test.ts`
+- Previously-passing suites must still pass — no regressions in `budget-splash.test.tsx`, `checkout-url.test.ts`, `referer.test.ts`, `guest-id.test.ts`, `payment-estimator.test.ts`, `use-debounce.test.ts`, `embed-client.test.tsx`.
+- If the repo has an E2E (Playwright) target separate from unit tests, note its existence but do NOT run it in this step — live E2E verification happens in a manual follow-up described under "Delivery notes" below, not in the automated runner.
 
-Report:
-- Pass/fail per gate
-- Any failing tests with assertion error text
-- Any TypeScript errors verbatim
-- Route summary (confirm `/embed` is dynamic; other routes unchanged)
-
-Do NOT modify any files. Report only.
+Testing requirements:
+- run the project's standard test command
+- report all failing tests clearly
+- summarize results
+- do not modify code or attempt fixes
 
 
 STEP 5 — CODE REVIEW
-Use the code-reviewer agent to review against the plan and these focus areas.
+Use the code-reviewer agent to review the implementation.
 
-1. **Server Component correctness** — `page.tsx` is async, uses `await headers()`, awaits `searchParams`, has no `"use client"` directive, renders no client-only APIs directly. `export const dynamic = "force-dynamic"` present.
+Review focus for this task:
+- Correctness against the wire contract: `SendMessageResponse` accurately reflects the backend's shape; snake_case/camelCase normalization (if any) is consistent and applied at exactly one boundary.
+- The renderer registry is a clean extension point. Adding a second renderer in the future should require editing only two files (the new renderer component + the registry map), not the chat panel or message component.
+- `is_error: true` is handled where intended (inside the `preview_cart` renderer), not silently swallowed by the registry lookup path.
+- Multiple-preview-in-one-turn dedupe is implemented at the `ChatPanel.submit()` boundary, and the test for it passes.
+- No regression in the existing checkout URL CTA path in `chat-message.tsx` — the button still appears for `generate_checkout_link` based on prose extraction.
+- History hydration path is untouched and `toolOutputs` is `undefined` on hydrated messages (not `[]` — preserve the narrow).
+- JSDoc, arrow-function, semicolon, single-line-if, async/await rules hold across all new code.
+- Tests cover: happy path, malformed `content` JSON, unknown `tool_name`, `is_error: true`, multi-preview dedupe, absent `tool_outputs` (no-op). No excessive mocking of internals.
+- Bundle-size awareness: `CartPreviewCard` should reuse HeroUI v3 primitives (`Card`, `Avatar`, typography) already present in the bundle — no new heavy dependencies. Flag any dep additions.
+- Security: `image_url` is rendered via `<img>` / HeroUI `Avatar`; confirm no `dangerouslySetInnerHTML` path was introduced. All dynamic strings from `content` go through React's default escaping.
 
-2. **Referer parsing security** — `parseRefererHostname` never throws on any input. Port is stripped (test `localhost:3000` → `"localhost"`). Returns `null` on empty, `null`, non-URL strings, and edge cases like `about:blank`. Hostname is lowercased for consistency with the allowlist.
+Review requirements:
+- verify correctness of the implementation
+- confirm alignment with the architectural plan
+- evaluate maintainability, security, and performance
+- ensure style refactor did not alter functionality
+- report issues using structured review feedback
 
-3. **Fail-closed coverage** — every failure mode converges on the error card:
-   - Missing Referer, missing accountUlid
-   - Unparseable Referer
-   - Fetch network error
-   - Fetch non-2xx
-   - Fetch 3-second timeout
-   - Malformed response body (`authorized` not a boolean)
-   - `authorized: false`
-   
-   Each branch emits a structured `console.error` before returning the card. No silent swallows.
 
-4. **Authorize fetch hygiene** — `cache: "no-store"` present. `AbortSignal.timeout(3000)` propagated via `init.signal`. Correct URL path (`/chat/web/embed/authorize`). Correct body field names (`accountUlid`, `parentDomain`). `Content-Type: application/json` header.
-
-5. **No behavioral regression** — the 5-state machine in `embed-client.tsx` is preserved byte-for-byte except for the prop-vs-searchParam input swap. Splash submit → onboarding POST → ChatPanel still works. Returning-visitor hydration still works. All existing test-ids still present.
-
-6. **Deny-path logging** — every deny branch logs `{ reason, parentDomain?, accountUlid? }`. No PII, no full URLs, no response bodies. Reason codes match the enumerated list.
-
-7. **Type safety** — no `any`, no `@ts-ignore`, no unsafe casts. `EmbedAuthorizeRequest` and `EmbedAuthorizeResponse` are properly typed. Response narrowing rejects malformed shapes.
-
-8. **Test coverage** — `parseRefererHostname` has 6+ cases covering happy path + all edge cases. `authorizeEmbed` has 3+ cases (happy, non-2xx, malformed body). `embed-client.test.tsx` covers the state machine (renamed from `page.test.tsx`). No E2E attempted at the unit layer; that's Playwright's job.
-
-9. **File layout / naming** — matches the plan: `page.tsx`, `embed-client.tsx`, `embed-authorization-error.tsx`, `referer.ts`, tests colocated. `"use client"` only on `embed-client.tsx`. No cross-boundary imports from server → client that break the RSC rules.
-
-10. **Build output** — `/embed` is `ƒ` (dynamic). Other routes (`/`, `/_not-found`, `/widget.js`) stay `○` (static).
-
-Output: structured markdown report with PASS / WARN / FAIL per focus area. Overall verdict: **APPROVED** / **APPROVED WITH NOTES** / **CHANGES REQUESTED**. Must-fix items listed separately from non-blocking observations.
+DELIVERY NOTES (post-review, for the operator — not a sub-agent step)
+- Live verification: run `npm run dev` (or equivalent), load the sandbox host (`public/sandbox.html`) via Playwright MCP, and walk splash → budget → chat → commit items → observe cart card → confirm → click checkout URL → land on the live ecommerce store with matching cart. Backend logs should show `Cart written` and (on edits) `Cart IDs reused from metadata`.
+- Journal: append a dated entry to `docs/journal.md` describing the tool_outputs renderer split, the registry pattern, and the cart card rollout. Keep it under ~30 lines per repo convention.
+- Commit message: follow `docs/agent/commit-messages.md` conventions. Conventional-commits style (`feat(chat): ...`).
+- Known follow-ups (document, do not implement): (a) historic `tool_outputs` via hydration endpoint so returning visitors see their previously-previewed cart; (b) pulling the checkout URL from the `generate_checkout_link` tool output instead of prose scraping; (c) interactive cart card (edit qty, remove line) once the backend exposes cart-mutation tools.
