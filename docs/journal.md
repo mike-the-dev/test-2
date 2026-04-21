@@ -36,6 +36,30 @@ At the end of a working session — or after shipping a meaningful milestone —
 
 ---
 
+## 2026-04-20 (late night) — Auto-greeting on splash submit replaces the stateless empty-state
+
+**Goal:** eliminate the hardcoded "What are you shopping for today?" placeholder that appeared between splash submit and the visitor's first message. Shopping intent is already captured by the time they submit the budget; the agent should greet them proactively instead of waiting.
+
+**What changed:**
+- Frontend sends a sentinel turn `POST /chat/web/messages { message: "__SESSION_KICKOFF__" }` immediately after `POST /onboarding` returns success. Backend recognizes the sentinel, generates the opening greeting (including the budget acknowledgment), and also filters the sentinel out of `GET /messages` hydration so it never reappears as a user bubble on reload.
+- `embed-client.tsx` gained a new `kickoff` state between `splash` and `chat`. It renders the same spinner as `hydrating` so the transition visually matches the returning-visitor path (~3-6s while the agent composes). On success the assistant reply becomes `initialMessages[0]` of `ChatPanel`, so the chat log lands already populated — no placeholder flash.
+- `SESSION_KICKOFF_CONTENT = "__SESSION_KICKOFF__"` is exported from `src/lib/api.ts` as the shared wire contract. Any drift requires backend coordination; the constant is referenced from both the dispatch site and the two filter sites.
+- Defense-in-depth filtering: the hydration mapper drops user messages matching the sentinel (belt for when backend filtering somehow slips), and `ChatMessageView` returns `null` on the same match (suspenders against any state path we forgot about).
+- localStorage guard `instapaytient_kickoff_<sessionUlid>` prevents a double-fire. Crucially set **after** the `sendMessage` response resolves, not before — a failed kickoff leaves no trace, so the next page load can retry instead of being stuck in empty-chat forever. The state-machine spinner already prevents concurrent dispatches during the in-flight window.
+- Kickoff failure is not fatal: drop to empty chat, log, move on. The visitor can still type.
+
+**Decisions worth remembering:**
+- **Set-after-success guard.** Initial plan was set-before to prevent double-fire, but that traps a failed kickoff permanently (guard set, but no greeting ever rendered). Set-after means the tradeoff is a tiny double-fire window during the in-flight request, which is covered by the state machine's spinner. Backend confirmed they don't enforce single-fire server-side, so a leaked double-greet would produce an extra welcome bubble in scrollback — not catastrophic and vanishingly unlikely in practice.
+- **Kickoff lives in `embed-client.tsx`, not `ChatPanel`.** It's session-lifecycle work, not user-driven chat. `ChatPanel` stays pure — only renders state and owns user submits. Adding a new state to the existing machine beats threading a "fireKickoff" prop through component boundaries.
+- **Shared constant, not duplicated strings.** Exported `SESSION_KICKOFF_CONTENT` rather than inlining `"__SESSION_KICKOFF__"` at three sites. If the backend ever needs to rotate the sentinel (they won't, but), it's a one-line frontend change.
+- **Defense-in-depth filters don't need to be smart — just cheap.** One equality check at hydration, one equality check at render. Both would be invisible code if they were written as one-liners. We could lean on the backend alone, but the cost of the extra guards is effectively zero and the cost of a leaked sentinel bubble is "visible debug string in production chat."
+
+**Next:**
+- Watch for the new backend double-confirmation gate at checkout ("Just to confirm — the cart looks good and you're ready to proceed?") — observed in live E2E but unrelated to kickoff. If it's not desired, push back to backend; if it is, consider a UI affordance (a "Yes, proceed" quick-reply chip) to lower friction.
+- Surface a "welcome back" variant of the kickoff for returning visitors whose GET `/messages` returns zero turns (onboarded but never chatted). Today they get the empty chat pane. Small polish.
+
+---
+
 ## 2026-04-20 (night) — Cart preview card + generic `tool_outputs` renderer registry
 
 **Goal:** wire the backend's new generic `tool_outputs` channel into the chat UI and ship the first concrete renderer — a structured cart preview card that appears inline with the assistant turn that produced it, replacing the prose-only cart summary with a qty × variant × unit price × line-total view plus a cart total footer.
