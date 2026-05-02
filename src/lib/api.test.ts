@@ -8,6 +8,7 @@ import {
   fetchSessionMessages,
   sendMessage,
 } from "@/lib/api";
+import { SESSION_ID_KEY } from "@/lib/session-id";
 
 function mockFetchOnce(response: {
   ok: boolean;
@@ -33,79 +34,223 @@ function mockFetchOnce(response: {
   );
 }
 
+function mockFetchSequence(
+  responses: Array<{ ok: boolean; status: number; body: unknown }>
+): void {
+  let call = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      const response = responses[call] ?? responses[responses.length - 1];
+      call += 1;
+      const text =
+        response.body === null || response.body === undefined
+          ? ""
+          : typeof response.body === "string"
+            ? response.body
+            : JSON.stringify(response.body);
+      return Promise.resolve({
+        ok: response.ok,
+        status: response.status,
+        text: () => Promise.resolve(text),
+      });
+    })
+  );
+}
+
 describe("api client", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
+    localStorage.clear();
   });
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    localStorage.clear();
   });
 
-  it("createSession posts to /chat/web/sessions with JSON body and headers", async () => {
-    mockFetchOnce({
-      ok: true,
-      status: 200,
-      body: {
-        sessionUlid: "S1",
-        displayName: "Shopping Assistant",
-        onboardingCompletedAt: null,
-        budgetCents: null,
-      },
-    });
+  describe("createSession", () => {
+    it("posts to /chat/web/sessions with JSON body and headers", async () => {
+      mockFetchOnce({
+        ok: true,
+        status: 200,
+        body: {
+          sessionId: "S1",
+          displayName: "Shopping Assistant",
+          onboardingCompletedAt: null,
+          kickoffCompletedAt: null,
+          budgetCents: null,
+        },
+      });
 
-    const result = await createSession({
-      agentName: "shopping_assistant",
-      guestUlid: "G1",
-      accountUlid: "A#01HACCOUNT0000000000000000",
-    });
-
-    expect(result).toEqual({
-      sessionUlid: "S1",
-      displayName: "Shopping Assistant",
-      onboardingCompletedAt: null,
-      budgetCents: null,
-    });
-
-    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:8081/chat/web/sessions");
-    expect(init.method).toBe("POST");
-    expect(init.headers).toEqual({ "Content-Type": "application/json" });
-    expect(init.body).toBe(
-      JSON.stringify({
+      const result = await createSession({
         agentName: "shopping_assistant",
-        guestUlid: "G1",
         accountUlid: "A#01HACCOUNT0000000000000000",
-      })
-    );
-  });
+      });
 
-  it("createSession serializes accountUlid verbatim (no prefix stripping) in the body", async () => {
-    mockFetchOnce({
-      ok: true,
-      status: 200,
-      body: {
-        sessionUlid: "S1",
+      expect(result).toEqual({
+        sessionId: "S1",
         displayName: "Shopping Assistant",
         onboardingCompletedAt: null,
+        kickoffCompletedAt: null,
         budgetCents: null,
-      },
+      });
+
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("http://localhost:8081/chat/web/sessions");
+      expect(init.method).toBe("POST");
+      expect(init.headers).toEqual({ "Content-Type": "application/json" });
+      expect(init.body).toBe(
+        JSON.stringify({
+          agentName: "shopping_assistant",
+          accountUlid: "A#01HACCOUNT0000000000000000",
+        })
+      );
     });
 
-    await createSession({
-      agentName: "shopping_assistant",
-      guestUlid: "G1",
-      accountUlid: "A#01K2XR5G6G22TB71SJCA823ESB",
+    it("serializes accountUlid verbatim (no prefix stripping) in the body", async () => {
+      mockFetchOnce({
+        ok: true,
+        status: 200,
+        body: {
+          sessionId: "S1",
+          displayName: "Shopping Assistant",
+          onboardingCompletedAt: null,
+          kickoffCompletedAt: null,
+          budgetCents: null,
+        },
+      });
+
+      await createSession({
+        agentName: "shopping_assistant",
+        accountUlid: "A#01K2XR5G6G22TB71SJCA823ESB",
+      });
+
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(init.body as string)).toEqual({
+        agentName: "shopping_assistant",
+        accountUlid: "A#01K2XR5G6G22TB71SJCA823ESB",
+      });
     });
 
-    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(init.body as string)).toEqual({
-      agentName: "shopping_assistant",
-      guestUlid: "G1",
-      accountUlid: "A#01K2XR5G6G22TB71SJCA823ESB",
+    it("sends sessionId in body when provided", async () => {
+      mockFetchOnce({
+        ok: true,
+        status: 201,
+        body: {
+          sessionId: "S1",
+          displayName: "Shopping Assistant",
+          onboardingCompletedAt: null,
+          kickoffCompletedAt: null,
+          budgetCents: null,
+        },
+      });
+
+      await createSession({
+        agentName: "a",
+        accountUlid: "A#x",
+        sessionId: "01HSTORED",
+      });
+
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(init.body as string)).toMatchObject({
+        sessionId: "01HSTORED",
+      });
+    });
+
+    it("clears localStorage and retries createSession without sessionId on 400", async () => {
+      localStorage.setItem(SESSION_ID_KEY, "01HSTALE");
+
+      const freshSession = {
+        sessionId: "01HNEWSESSION",
+        displayName: "Shopping Assistant",
+        onboardingCompletedAt: null,
+        kickoffCompletedAt: null,
+        budgetCents: null,
+      };
+
+      mockFetchSequence([
+        { ok: false, status: 400, body: { error: "invalid session id format" } },
+        { ok: true, status: 201, body: freshSession },
+      ]);
+
+      const result = await createSession({
+        agentName: "shopping_assistant",
+        accountUlid: "A#01HACCOUNT0000000000000000",
+        sessionId: "01HSTALE",
+      });
+
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      const [, retryInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+      const retryBody = JSON.parse(retryInit.body as string);
+      expect(retryBody).not.toHaveProperty("sessionId");
+
+      expect(localStorage.getItem(SESSION_ID_KEY)).toBeNull();
+      expect(result).toEqual(freshSession);
+    });
+
+    it("surfaces ChatApiError when both initial and retry fetches return 400", async () => {
+      mockFetchSequence([
+        { ok: false, status: 400, body: { error: "invalid session id format" } },
+        { ok: false, status: 400, body: { error: "still bad" } },
+      ]);
+
+      await expect(
+        createSession({
+          agentName: "shopping_assistant",
+          accountUlid: "A#01HACCOUNT0000000000000000",
+          sessionId: "01HSTALE",
+        })
+      ).rejects.toMatchObject({ name: "ChatApiError", status: 400 });
+
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("throws ChatApiError with status and parsed body on 4xx (no sessionId — no retry)", async () => {
+      mockFetchOnce({
+        ok: false,
+        status: 400,
+        body: { error: "bad request" },
+      });
+
+      await expect(
+        createSession({
+          agentName: "shopping_assistant",
+          accountUlid: "A#01HACCOUNT0000000000000000",
+        })
+      ).rejects.toMatchObject({
+        name: "ChatApiError",
+        status: 400,
+        body: { error: "bad request" },
+      });
+
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("throws ChatApiError with status 0 on network failure", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => {
+          throw new TypeError("Failed to fetch");
+        })
+      );
+
+      const err = await createSession({
+        agentName: "shopping_assistant",
+        accountUlid: "A#01HACCOUNT0000000000000000",
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ChatApiError);
+      expect((err as ChatApiError).status).toBe(0);
+      expect((err as ChatApiError).body).toBeNull();
     });
   });
 
@@ -114,9 +259,10 @@ describe("api client", () => {
       ok: true,
       status: 200,
       body: {
-        sessionUlid: "S1",
+        sessionId: "S1",
         displayName: "Shopping Assistant",
         onboardingCompletedAt: "2026-04-20T12:00:00.000Z",
+        kickoffCompletedAt: null,
         budgetCents: 150_000,
       },
     });
@@ -126,9 +272,10 @@ describe("api client", () => {
     });
 
     expect(result).toEqual({
-      sessionUlid: "S1",
+      sessionId: "S1",
       displayName: "Shopping Assistant",
       onboardingCompletedAt: "2026-04-20T12:00:00.000Z",
+      kickoffCompletedAt: null,
       budgetCents: 150_000,
     });
 
@@ -186,7 +333,7 @@ describe("api client", () => {
     mockFetchOnce({ ok: true, status: 200, body: { reply: "hi there" } });
 
     const result = await sendMessage({
-      sessionUlid: "S1",
+      sessionId: "S1",
       message: "hello",
     });
 
@@ -196,14 +343,14 @@ describe("api client", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("http://localhost:8081/chat/web/messages");
     expect(init.body).toBe(
-      JSON.stringify({ sessionUlid: "S1", message: "hello" })
+      JSON.stringify({ sessionId: "S1", message: "hello" })
     );
   });
 
   it("sendMessage omits toolOutputs from the result when wire has no tool_outputs", async () => {
     mockFetchOnce({ ok: true, status: 200, body: { reply: "hi" } });
 
-    const result = await sendMessage({ sessionUlid: "S1", message: "hello" });
+    const result = await sendMessage({ sessionId: "S1", message: "hello" });
 
     expect(result).toEqual({ reply: "hi" });
     expect(result).not.toHaveProperty("toolOutputs");
@@ -222,7 +369,7 @@ describe("api client", () => {
       },
     });
 
-    const result = await sendMessage({ sessionUlid: "S1", message: "show cart" });
+    const result = await sendMessage({ sessionId: "S1", message: "show cart" });
 
     expect(result.reply).toBe("here is your cart");
     expect(result.toolOutputs).toHaveLength(2);
@@ -241,36 +388,16 @@ describe("api client", () => {
   it("sendMessage preserves toolOutputs as undefined (not []) when tool_outputs is absent", async () => {
     mockFetchOnce({ ok: true, status: 200, body: { reply: "ok" } });
 
-    const result = await sendMessage({ sessionUlid: "S1", message: "ok" });
+    const result = await sendMessage({ sessionId: "S1", message: "ok" });
 
     expect("toolOutputs" in result).toBe(false);
-  });
-
-  it("throws ChatApiError with status and parsed body on 4xx", async () => {
-    mockFetchOnce({
-      ok: false,
-      status: 400,
-      body: { error: "bad request" },
-    });
-
-    await expect(
-      createSession({
-        agentName: "shopping_assistant",
-        guestUlid: "G1",
-        accountUlid: "A#01HACCOUNT0000000000000000",
-      })
-    ).rejects.toMatchObject({
-      name: "ChatApiError",
-      status: 400,
-      body: { error: "bad request" },
-    });
   });
 
   it("throws ChatApiError with status and parsed body on 5xx", async () => {
     mockFetchOnce({ ok: false, status: 500, body: { error: "kaboom" } });
 
     await expect(
-      sendMessage({ sessionUlid: "S1", message: "hi" })
+      sendMessage({ sessionId: "S1", message: "hi" })
     ).rejects.toMatchObject({
       name: "ChatApiError",
       status: 500,
@@ -278,30 +405,11 @@ describe("api client", () => {
     });
   });
 
-  it("throws ChatApiError with status 0 on network failure", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        throw new TypeError("Failed to fetch");
-      })
-    );
-
-    const err = await createSession({
-      agentName: "shopping_assistant",
-      guestUlid: "G1",
-      accountUlid: "A#01HACCOUNT0000000000000000",
-    }).catch((e: unknown) => e);
-
-    expect(err).toBeInstanceOf(ChatApiError);
-    expect((err as ChatApiError).status).toBe(0);
-    expect((err as ChatApiError).body).toBeNull();
-  });
-
   it("tolerates empty or non-JSON error bodies", async () => {
     mockFetchOnce({ ok: false, status: 502, body: null });
 
     const err = await sendMessage({
-      sessionUlid: "S1",
+      sessionId: "S1",
       message: "hi",
     }).catch((e: unknown) => e);
 

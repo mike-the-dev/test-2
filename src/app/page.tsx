@@ -1,7 +1,7 @@
 import { Card, Link } from "@heroui/react";
 import type { ReactElement } from "react";
 
-const INTEGRATOR_SNIPPET = `<script src="https://chat.instapaytient.com/widget.js" data-account-ulid="YOUR_ACCOUNT_ULID" async></script>`;
+const INTEGRATOR_SNIPPET = `<script src="https://chat.instapaytient.com/widget.js" data-account-ulid="YOUR_ACCOUNT_ID" async></script>`;
 
 export default function HomePage(): ReactElement {
   return (

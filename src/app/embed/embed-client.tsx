@@ -15,7 +15,7 @@ import {
   sendMessage,
   SESSION_KICKOFF_CONTENT,
 } from "@/lib/api";
-import { ensureGuestId } from "@/lib/guest-id";
+import { readStoredSessionId, writeStoredSessionId } from "@/lib/session-id";
 import { dedupeToolOutputsWithinTurn } from "@/lib/tool-renderers";
 import type { ChatMessage, SessionInfo } from "@/types/chat";
 
@@ -56,27 +56,24 @@ const messageFromApiError = (err: unknown): string => {
 
 export interface EmbedClientProps {
   agent: string;
-  guestId: string | null;
   accountUlid: string;
 }
 
 /**
  * @author mike-the-dev (Michael Camacho)
  * @editor mike-the-dev (Michael Camacho)
- * @lastUpdated 2026-04-20
+ * @lastUpdated 2026-04-30
  * @name EmbedClient
  * @description Client component that drives the 5-state embedded chat machine
  *   (loading → splash | hydrating → chat | error). Receives pre-validated
  *   props from the parent Server Component instead of reading search params
  *   directly, so no Suspense boundary is required.
  * @param agent - The agent name to use for the chat session.
- * @param guestId - Optional pre-existing guest ULID; falls back to localStorage.
- * @param accountUlid - The account ULID for session creation.
+ * @param accountUlid - The account ID for session creation.
  * @returns The appropriate UI for the current state.
  */
 export const EmbedClient = ({
   agent,
-  guestId,
   accountUlid,
 }: EmbedClientProps): ReactElement => {
   const [state, setState] = useState<EmbedState>({ status: "loading" });
@@ -85,16 +82,6 @@ export const EmbedClient = ({
 
   useEffect(() => {
     let cancelled = false;
-    let guestUlid: string;
-    try {
-      guestUlid =
-        guestId && guestId.length > 0 ? guestId : ensureGuestId();
-    } catch (err) {
-      const reason =
-        err instanceof Error ? err.message : "guest id unavailable";
-      setState({ status: "error", message: reason });
-      return () => undefined;
-    }
 
     const controller = new AbortController();
     abortRef.current?.abort();
@@ -104,14 +91,18 @@ export const EmbedClient = ({
 
     console.debug("[instapaytient] session create", { agent });
 
+    const storedSessionId = readStoredSessionId();
+
     const run = async (): Promise<void> => {
       try {
         const session = await createSession(
-          { agentName: agent, guestUlid, accountUlid },
+          { agentName: agent, accountUlid, ...(storedSessionId !== null ? { sessionId: storedSessionId } : {}) },
           { signal: controller.signal }
         );
 
         if (cancelled) return;
+
+        writeStoredSessionId(session.sessionId);
 
         if (session.onboardingCompletedAt) {
           setState({ status: "hydrating", session });
@@ -119,7 +110,7 @@ export const EmbedClient = ({
           let hydratedMessages: ChatMessage[] = [];
           try {
             const { messages } = await fetchSessionMessages(
-              session.sessionUlid,
+              session.sessionId,
               { signal: controller.signal }
             );
             if (cancelled || controller.signal.aborted) return;
@@ -147,7 +138,7 @@ export const EmbedClient = ({
             setState({ status: "kickoff", session });
             try {
               const response = await sendMessage(
-                { sessionUlid: session.sessionUlid, message: SESSION_KICKOFF_CONTENT },
+                { sessionId: session.sessionId, message: SESSION_KICKOFF_CONTENT },
                 { signal: controller.signal }
               );
               if (cancelled || controller.signal.aborted) return;
@@ -198,7 +189,7 @@ export const EmbedClient = ({
       cancelled = true;
       controller.abort();
     };
-  }, [agent, guestId, accountUlid, attempt]);
+  }, [agent, accountUlid, attempt]);
 
   const retry = useCallback(() => {
     setAttempt((previousAttempt) => previousAttempt + 1);
@@ -219,7 +210,7 @@ export const EmbedClient = ({
         let updated: SessionInfo;
         try {
           updated = await completeOnboarding(
-            session.sessionUlid,
+            session.sessionId,
             { budgetCents },
             { signal: controller.signal }
           );
@@ -243,7 +234,7 @@ export const EmbedClient = ({
         try {
           const response = await sendMessage(
             {
-              sessionUlid: updated.sessionUlid,
+              sessionId: updated.sessionId,
               message: SESSION_KICKOFF_CONTENT,
             },
             { signal: controller.signal }

@@ -7,7 +7,6 @@
  */
 export const WIDGET_SOURCE = String.raw`(function () {
   try {
-    var STORAGE_KEY = "instapaytient_guest_id";
     var ROOT_ATTR = "data-instapaytient-widget";
     var CLOSE_MESSAGE_TYPE = "instapaytient:close";
 
@@ -18,7 +17,7 @@ export const WIDGET_SOURCE = String.raw`(function () {
 
     // Locate the <script> tag that loaded this bundle so we can read (a) the
     // origin the iframe should point back to and (b) the integrator's public
-    // account ULID from its data-account-ulid attribute.
+    // account ID from its data-account-ulid attribute.
     var currentScript = document.currentScript;
     if (!currentScript) {
       var scripts = document.getElementsByTagName("script");
@@ -50,54 +49,9 @@ export const WIDGET_SOURCE = String.raw`(function () {
       }
     }
 
-    // --- Inline ULID generator (Crockford base32). ---------------------------
-    var ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-    function encodeTime(now, len) {
-      var out = "";
-      for (var j = len - 1; j >= 0; j--) {
-        var mod = now % 32;
-        out = ULID_ALPHABET.charAt(mod) + out;
-        now = (now - mod) / 32;
-      }
-      return out;
-    }
-    function encodeRandom(len) {
-      var bytes = new Uint8Array(len);
-      window.crypto.getRandomValues(bytes);
-      var out = "";
-      for (var k = 0; k < len; k++) {
-        out += ULID_ALPHABET.charAt(bytes[k] % 32);
-      }
-      return out;
-    }
-    function generateUlid() {
-      return encodeTime(Date.now(), 10) + encodeRandom(16);
-    }
-
-    // --- Guest ID persistence with private-browsing fallback. ---------------
-    var inMemoryGuestId = null;
-    function ensureGuestId() {
-      try {
-        var existing = window.localStorage.getItem(STORAGE_KEY);
-        if (existing && existing.length > 0) {
-          return existing;
-        }
-        var created = generateUlid();
-        window.localStorage.setItem(STORAGE_KEY, created);
-        return created;
-      } catch (e) {
-        if (inMemoryGuestId) return inMemoryGuestId;
-        inMemoryGuestId = generateUlid();
-        return inMemoryGuestId;
-      }
-    }
-
-    var guestId = ensureGuestId();
     var iframeUrl =
       widgetOrigin +
-      "/embed?guestId=" +
-      encodeURIComponent(guestId) +
-      "&agent=shopping_assistant" +
+      "/embed?agent=shopping_assistant" +
       "&accountUlid=" +
       encodeURIComponent(accountUlid);
 
@@ -173,7 +127,7 @@ export const WIDGET_SOURCE = String.raw`(function () {
       iframe.setAttribute("title", "Instapaytient chat");
       // Force the browser to send the parent page's origin as the Referer on
       // the iframe load, regardless of the host page's Referrer-Policy. The
-      // backend validates that origin against the account ULID at /embed
+      // backend validates that origin against the account ID at /embed
       // render time — an unspoofable check that body fields can't give us.
       iframe.setAttribute("referrerpolicy", "origin");
       iframe.src = iframeUrl;

@@ -19,7 +19,6 @@ vi.mock("@/lib/affirm", () => ({
   refreshAffirmUi: vi.fn(),
 }));
 
-const GUEST = "01HGUEST0000000000000000000";
 const ACCOUNT = "A#01HACCOUNT0000000000000000";
 const SESSION = "01HSESSION00000000000000000";
 
@@ -30,7 +29,7 @@ describe("EmbedClient", () => {
   let sendMessageSpy: MockInstance<typeof api.sendMessage>;
 
   const makeSession = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
-    sessionUlid: SESSION,
+    sessionId: SESSION,
     displayName: "Shopping Assistant",
     onboardingCompletedAt: null,
     kickoffCompletedAt: null,
@@ -39,6 +38,7 @@ describe("EmbedClient", () => {
   });
 
   beforeEach(() => {
+    localStorage.clear();
     createSessionSpy = vi.spyOn(api, "createSession");
     completeOnboardingSpy = vi.spyOn(api, "completeOnboarding");
     fetchMessagesSpy = vi.spyOn(api, "fetchSessionMessages");
@@ -46,6 +46,7 @@ describe("EmbedClient", () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    localStorage.clear();
   });
 
   it("renders the budget splash when the server returns a non-onboarded session", async () => {
@@ -54,7 +55,6 @@ describe("EmbedClient", () => {
     render(
       <EmbedClient
         agent="shopping_assistant"
-        guestId={GUEST}
         accountUlid={ACCOUNT}
       />
     );
@@ -65,7 +65,6 @@ describe("EmbedClient", () => {
     expect(createSessionSpy).toHaveBeenCalledWith(
       {
         agentName: "shopping_assistant",
-        guestUlid: GUEST,
         accountUlid: ACCOUNT,
       },
       expect.objectContaining({ signal: expect.any(AbortSignal) })
@@ -87,7 +86,6 @@ describe("EmbedClient", () => {
     render(
       <EmbedClient
         agent="shopping_assistant"
-        guestId={GUEST}
         accountUlid={ACCOUNT}
       />
     );
@@ -104,7 +102,7 @@ describe("EmbedClient", () => {
     });
     await waitFor(() => {
       expect(sendMessageSpy).toHaveBeenCalledWith(
-        { sessionUlid: SESSION, message: "__SESSION_KICKOFF__" },
+        { sessionId: SESSION, message: "__SESSION_KICKOFF__" },
         expect.objectContaining({ signal: expect.any(AbortSignal) })
       );
     });
@@ -130,7 +128,6 @@ describe("EmbedClient", () => {
     render(
       <EmbedClient
         agent="shopping_assistant"
-        guestId={GUEST}
         accountUlid={ACCOUNT}
       />
     );
@@ -154,7 +151,6 @@ describe("EmbedClient", () => {
     render(
       <EmbedClient
         agent="shopping_assistant"
-        guestId={GUEST}
         accountUlid={ACCOUNT}
       />
     );
@@ -193,7 +189,6 @@ describe("EmbedClient", () => {
     render(
       <EmbedClient
         agent="shopping_assistant"
-        guestId={GUEST}
         accountUlid={ACCOUNT}
       />
     );
@@ -236,14 +231,13 @@ describe("EmbedClient", () => {
     render(
       <EmbedClient
         agent="shopping_assistant"
-        guestId={GUEST}
         accountUlid={ACCOUNT}
       />
     );
 
     await waitFor(() => {
       expect(sendMessageSpy).toHaveBeenCalledWith(
-        { sessionUlid: SESSION, message: "__SESSION_KICKOFF__" },
+        { sessionId: SESSION, message: "__SESSION_KICKOFF__" },
         expect.objectContaining({ signal: expect.any(AbortSignal) })
       );
     });
@@ -274,7 +268,6 @@ describe("EmbedClient", () => {
     render(
       <EmbedClient
         agent="shopping_assistant"
-        guestId={GUEST}
         accountUlid={ACCOUNT}
       />
     );
@@ -311,7 +304,6 @@ describe("EmbedClient", () => {
     render(
       <EmbedClient
         agent="shopping_assistant"
-        guestId={GUEST}
         accountUlid={ACCOUNT}
       />
     );
@@ -357,7 +349,6 @@ describe("EmbedClient", () => {
     render(
       <EmbedClient
         agent="shopping_assistant"
-        guestId={GUEST}
         accountUlid={ACCOUNT}
       />
     );
@@ -381,7 +372,6 @@ describe("EmbedClient", () => {
     render(
       <EmbedClient
         agent="shopping_assistant"
-        guestId={GUEST}
         accountUlid={ACCOUNT}
       />
     );
@@ -404,7 +394,6 @@ describe("EmbedClient", () => {
     render(
       <EmbedClient
         agent="shopping_assistant"
-        guestId={GUEST}
         accountUlid={ACCOUNT}
       />
     );

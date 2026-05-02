@@ -24,7 +24,7 @@ export interface ChatPanelProps {
   session: SessionInfo;
   /**
    * Optional prior conversation turns fetched from
-   * `GET /chat/web/sessions/:ulid/messages`. Used to hydrate the message
+   * `GET /chat/web/sessions/:sessionId/messages`. Used to hydrate the message
    * log when a returning visitor reopens the widget. Empty or undefined
    * means render the brand-new empty state.
    */
@@ -140,13 +140,13 @@ export function ChatPanel({
       setIsSending(true);
 
       console.debug("[instapaytient] send", {
-        sessionUlid: session.sessionUlid,
+        sessionId: session.sessionId,
         length: text.length,
       });
 
       try {
         const { reply, toolOutputs: rawToolOutputs } = await sendMessage({
-          sessionUlid: session.sessionUlid,
+          sessionId: session.sessionId,
           message: text,
         });
 
@@ -194,12 +194,12 @@ export function ChatPanel({
       } catch (err) {
         const status = err instanceof ChatApiError ? err.status : "network";
         console.error("[instapaytient] send failed", {
-          sessionUlid: session.sessionUlid,
+          sessionId: session.sessionId,
           status,
         });
         setMessages((prev) =>
-          prev.map((m) =>
-            m.id === pendingId
+          prev.map((message) =>
+            message.id === pendingId
               ? {
                   id: pendingId,
                   role: "assistant",
@@ -207,14 +207,14 @@ export function ChatPanel({
                     "Something went wrong sending that message. Please try again in a moment.",
                   errored: true,
                 }
-              : m
+              : message
           )
         );
       } finally {
         setIsSending(false);
       }
     },
-    [isSending, session.sessionUlid]
+    [isSending, session.sessionId]
   );
 
   const onSubmit = (e: FormEvent<HTMLFormElement>): void => {

@@ -15,7 +15,7 @@ import * as api from "@/lib/api";
 import type { SendMessageResponse } from "@/types/chat";
 
 const session = {
-  sessionUlid: "01HSESSION00000000000000000",
+  sessionId: "01HSESSION00000000000000000",
   displayName: "Shopping Assistant",
   onboardingCompletedAt: "2026-04-20T12:00:00.000Z",
   kickoffCompletedAt: "2026-04-20T12:00:05.000Z",
@@ -65,7 +65,7 @@ describe("ChatPanel", () => {
       );
     });
     expect(sendMessageSpy).toHaveBeenCalledWith({
-      sessionUlid: session.sessionUlid,
+      sessionId: session.sessionId,
       message: "hello world",
     });
   });

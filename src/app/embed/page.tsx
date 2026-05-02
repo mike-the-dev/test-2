@@ -31,7 +31,7 @@ const denyAuthorization = (
 /**
  * @author mike-the-dev (Michael Camacho)
  * @editor mike-the-dev (Michael Camacho)
- * @lastUpdated 2026-04-20
+ * @lastUpdated 2026-04-30
  * @name EmbedPage
  * @description Async Server Component for the `/embed` route. Reads the
  *   incoming `Referer` header and `accountUlid` search param, then calls the
@@ -50,15 +50,11 @@ async function EmbedPage(props: {
   const referer = headerMap.get("referer") ?? null;
   const rawAccountUlid = resolvedSearchParams["accountUlid"];
   const rawAgent = resolvedSearchParams["agent"];
-  const rawGuestId = resolvedSearchParams["guestId"];
 
   const accountUlid =
     (Array.isArray(rawAccountUlid) ? rawAccountUlid[0] : rawAccountUlid ?? "").trim();
   const agent =
     (Array.isArray(rawAgent) ? rawAgent[0] : rawAgent ?? DEFAULT_AGENT).trim();
-  const guestId = Array.isArray(rawGuestId)
-    ? rawGuestId[0] ?? null
-    : rawGuestId ?? null;
 
   const parentDomain = parseRefererHostname(referer);
 
@@ -86,7 +82,7 @@ async function EmbedPage(props: {
   if (!authorized)
     return denyAuthorization("authorize_denied", { parentDomain, accountUlid });
 
-  return <EmbedClient agent={agent} guestId={guestId} accountUlid={accountUlid} />;
+  return <EmbedClient agent={agent} accountUlid={accountUlid} />;
 }
 
 export default EmbedPage;

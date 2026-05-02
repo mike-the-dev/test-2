@@ -44,7 +44,7 @@ export interface ChatMessage {
 }
 
 export interface SessionInfo {
-  sessionUlid: string;
+  sessionId: string;
   displayName: string;
   /**
    * ISO 8601 timestamp of when the visitor completed the budget splash, or
@@ -69,9 +69,10 @@ export interface SessionInfo {
 
 export interface CreateSessionRequest {
   agentName: string;
-  guestUlid: string;
+  /** Previously stored session ID, sent to allow the backend to resume an existing session. Omitted on first load. */
+  sessionId?: string;
   /**
-   * Public account ULID from the integrator's <script data-account-ulid>
+   * Public account ID from the integrator's <script data-account-ulid>
    * attribute. Required — the backend binds the session to this account
    * after cross-validating it against the iframe-load Referer domain.
    */
@@ -88,7 +89,7 @@ export interface OnboardingRequest {
 export type OnboardingResponse = SessionInfo;
 
 export interface SendMessageRequest {
-  sessionUlid: string;
+  sessionId: string;
   message: string;
 }
 
@@ -98,7 +99,7 @@ export interface SendMessageResponse {
 }
 
 /**
- * A historical turn returned from GET /chat/web/sessions/:ulid/messages.
+ * A historical turn returned from GET /chat/web/sessions/:sessionId/messages.
  * Filtered server-side to user + assistant text only; tool-use and
  * tool-result blocks never cross the wire.
  */
