@@ -36,6 +36,31 @@ At the end of a working session — or after shipping a meaningful milestone —
 
 ---
 
+## 2026-05-02 — Identity cleanup phase 2: browser stores `sessionId` directly
+
+**Goal:** retire the long-lived `guestUlid` model. The backend's IDENTITY translation table is gone (backend commit `2425bb17`); the browser now stores `sessionId` directly under a new localStorage key, sends it on every session-create, and unconditionally overwrites with whatever the backend returns. Stale-but-valid IDs are handled by the backend silently minting a fresh session and returning 200 with a new `sessionId` — the frontend's overwrite rule catches the swap transparently.
+
+**What changed:**
+- `SessionInfo.sessionUlid` → `sessionId` cascading through types, API client, components, and tests. `CreateSessionRequest` lost `guestUlid`, gained optional `sessionId`. `SendMessageRequest` body field renamed. Path params on `/messages` and `/onboarding` renamed `:sessionUlid` → `:sessionId`.
+- Retired `src/lib/guest-id.ts` (with its inline ULID minter) and replaced with `src/lib/session-id.ts` exporting `readStoredSessionId`, `writeStoredSessionId`, `clearStoredSessionId`, plus the `SESSION_ID_KEY = "instapaytient_chat_session_id"` constant. No client-side minting; the helpers are pure read/write/clear over `window.localStorage` with silent error swallow for private-browsing / quota-exceeded cases.
+- `createSession` in `src/lib/api.ts` gained a 400-clear-and-retry branch. Originally framed as "stale session defense" — relabeled after backend confirmation as **malformed-stored-ID defense** (the only way a 400 reaches that path is a tampered/corrupted localStorage value failing the backend's ULID regex). Stale-but-valid IDs never 400; they just resolve to a fresh session via the silent-mint path.
+- `embed-client.tsx` lost the `guestId` prop and the `ensureGuestId()` call. State machine now reads stored sessionId at the top of the bootstrap effect, conditionally spreads it into the `createSession` body, and unconditionally writes the response's `sessionId` back to localStorage before branching on `onboardingCompletedAt`. Server Component (`page.tsx`) dropped the `guestId` searchParam read.
+- `widget.js` source got dramatically shorter — the inline ULID generator (alphabet, encoders, generateUlid), `STORAGE_KEY`, `inMemoryGuestId`, and `ensureGuestId` all removed. The iframe URL stops carrying a `guestId` query param. Widget origin and `data-account-ulid` parsing stay.
+- Doc-side sweep: removed every prose mention of "ULID" from comments and JSDoc (`account ULID` → `account ID`, `:ulid` path comments → `:sessionId`). Wire-contract literals (`data-account-ulid` HTML attribute, `accountUlid` body field, the `ulid` npm package) stay untouched.
+
+**Decisions worth remembering:**
+- **Unconditional overwrite is the load-bearing rule.** `writeStoredSessionId(response.sessionId)` runs after every successful `createSession` regardless of whether the request had a stored ID, regardless of whether the response ID matches what was sent. This single rule handles every case: new session, resumed session, silent-mint replacement. Backend agent confirmed independently that this is the correct contract — the frontend never needs to compare sent-vs-returned IDs. If you ever feel tempted to add a "did the ID change?" branch, don't. The overwrite rule is the answer.
+- **400-retry defends a much rarer case than originally framed.** Initial mental model called it "stale session retry." Backend clarified that stale IDs are handled silently via mint+200, never 400. The 400 fires only on malformed values that fail the backend's Crockford ULID regex — i.e. localStorage was tampered with, browser extension corrupted it, or a manual devtools edit. Renamed the local variable `isStaleSession` → `isMalformedStoredId` and the destructured `_staleId` → `_invalidId` so future readers don't carry the wrong mental model into a redesign.
+- **No in-memory fallback for blocked storage.** The old `ensureGuestId()` had an `inMemoryGuestId` variable that kept a stable guest ID alive within a page session if localStorage was blocked. The new model doesn't replicate that — `readStoredSessionId()` returns null when blocked, and `createSession` mints fresh server-side. The session is still stable for the page's lifetime via React state; only cross-reload continuity is lost in incognito. Same degradation as ChatGPT and Claude.com; acceptable.
+- **`accountUlid` body field name kept as-is.** Backend's brief explicitly noted this predates the rename pass. Two-step renames are dangerous; we'll let it ride. The `data-account-ulid` HTML attribute on integrator script tags also stays — backend reads that exact string.
+
+**Next:**
+- Three test coverage gaps the code-reviewer flagged (no test asserts `writeStoredSessionId` actually fires after `createSession` resolves, no integration test seeds a stored ID and verifies passthrough, no error-swallow test for `clearStoredSessionId`). None hide bugs in the current implementation, but they leave observable behavior unverified. Worth a follow-up sprint.
+- Manual Playwright sweep against the three lifecycle paths (fresh visitor, returning visitor, malformed-localStorage 400-retry) — defer until needed; unit tests cover the contract well.
+- Anthropic-streaming UX work is queued separately. The chat bubbles currently pop in fully-formed; switching to native Anthropic Messages API streaming (`stream: true`) would deliver tokens as they generate and produce the typing-illusion effect that ChatGPT/Claude.com have. Backend lift; will revisit.
+
+---
+
 ## 2026-04-21 — Kickoff guard goes server-authoritative
 
 **Goal:** replace the client-side localStorage kickoff guard with a server-authoritative `kickoffCompletedAt: string | null` field so the backend is the single source of truth for whether a session has been greeted. Backend shipped the field on both session-create and onboarding responses; this milestone is the frontend cutover.
