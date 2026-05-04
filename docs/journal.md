@@ -36,6 +36,31 @@ At the end of a working session — or after shipping a meaningful milestone —
 
 ---
 
+## 2026-05-03 — Floating bubble: Affirm-branded pill with sweeping magenta StarBorder
+
+**Goal:** replace the circular chat icon on integrator sites with a co-branded Affirm CTA that does double duty — visually it's a "Get Treated Now, Pay Later / Prequalify here" prompt with the real Affirm wordmark; functionally it's still the chat-iframe toggle. Plus a subtle animated magenta border sweep so the affordance reads as alive, not static.
+
+**What changed:**
+- `src/app/widget.js/widget-source.ts` — the bubble morphed from a 56×56 circle with a message-circle icon into a ~340×56 pill. Two-tone layout: brand-blue (`#006FEE`) left section with stacked white text ("Get Treated Now, Pay Later" bold heading + "Prequalify for your treatment here." subtitle), white rounded-pill inset on the right containing the real Affirm SVG wordmark with the indigo (`#4A4AF4`) arch.
+- Affirm SVG sourced from the sibling `ecommerce-app-frontend` repo's `public/black-logo-white-bg.svg` and inlined verbatim into the widget source string. Renamed the embedded `clipPath` ID to `instapaytient-affirm-clip` to avoid collision risk on integrator pages that may already use Affirm assets.
+- Added a sweeping magenta border-glow effect (StarBorder pattern, transcribed from React to vanilla). Two thin (2px) gradient ellipses positioned flush against the top and bottom rims, running in opposite directions on a 5s alternating cycle. Keyframes injected once per page via a `<style>` element appended to `document.head`.
+- Bubble gained `position: relative` and `overflow: hidden` so the gradient ellipses' off-screen overflow gets clipped at the rounded corners. Inner content moved into a `position: relative; z-index: 1` wrapper so it sits above the gradient layer.
+
+**Decisions worth remembering:**
+- **Vanilla, not React.** The widget script runs on third-party integrator sites — they don't have React or any build pipeline. So no shadcn, no react-bits, no Tailwind. Inline styles + raw DOM API only. Keyframes have to come from an injected `<style>` tag because `element.style.animation` references named keyframes but can't define them. The wholesome `<StarBorder>` JSX pattern stays available for the React layer inside the iframe (`/embed`) but not for the bubble itself.
+- **2px ellipse height, not 50%.** First pass used the StarBorder's default 50%-height ellipses with `bottom: -12px` etc., producing a magenta blob that washed across the lower half of the pill. Reading as a soft blur, not a border. Shrunk to `height: 2px` flush against `bottom: 0` and `top: 0`, kept the radial gradient's `transparent 10%` cutoff. Now reads as a thin line riding the rim — closer to the StarBorder's intent on a tall button rather than a stretched pill.
+- **Real Affirm SVG, not a hand-drawn approximation.** The first pass used an inline `<text>` with "affirm" in Helvetica + a curved `<path>` for the arch. Looked OK but wasn't the actual wordmark. Once the user pointed at the sibling repo's official SVG, swapped in the real artwork (6 paths + clipPath + the indigo arch). Now byte-perfect with Affirm's brand asset.
+- **Width auto, height locked at 56px.** Per the user's note, the existing circle's height was the right vertical real estate for integrator sites — kept. Width grows to fit the text + Affirm inset (~340px). Bottom-right anchor and box shadow unchanged from the original circle.
+- **Magenta `transparent 10%` is intentionally subtle.** The visible magenta is only the inner 10% of a 1000+ px ellipse, sweeping across the bubble width. Combined with the alternating 5s cycle, the effect reads as a soft pulse — not a gaudy disco. Cranking it up (e.g., `transparent 25%` or higher opacity) would over-emphasize the financing CTA framing; the current calibration keeps the pill feeling like a chat affordance first, financing second.
+- **Hover scale and click-to-toggle preserved.** No changes to the toggle behavior or `mouseenter`/`mouseleave` transform logic. The pill is visually different but functionally the same as the prior circle.
+
+**Next:**
+- Optional: extend the glow to also ride the left and right edges (full perimeter sweep) using a rotating conic-gradient masked to a 1px ring. Roughly 30 lines, standalone change. User flagged interest but didn't pull the trigger — flagged for later.
+- Optional: revisit the magenta if the brand prefers a different accent color. Easy 1-line swap once a final brand choice is made.
+- Mobile/responsive: at narrow viewports (< 480px) the pill might want to collapse back to an icon-only or shorter-text variant. Not a problem in the immediate sandbox, but worth checking if any integrator embeds the widget on a mobile-first site without their own viewport handling.
+
+---
+
 ## 2026-05-02 — Identity cleanup phase 2: browser stores `sessionId` directly
 
 **Goal:** retire the long-lived `guestUlid` model. The backend's IDENTITY translation table is gone (backend commit `2425bb17`); the browser now stores `sessionId` directly under a new localStorage key, sends it on every session-create, and unconditionally overwrites with whatever the backend returns. Stale-but-valid IDs are handled by the backend silently minting a fresh session and returning 200 with a new `sessionId` — the frontend's overwrite rule catches the swap transparently.
