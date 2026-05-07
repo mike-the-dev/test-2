@@ -43,6 +43,38 @@ export interface ChatMessage {
   toolOutputs?: ToolOutput[];
 }
 
+export interface SplashConfigOnboardingFieldBudget {
+  kind: "budget";
+  key: "budgetCents";
+  label: string;
+  required: boolean;
+}
+
+export interface SplashConfigOnboardingFieldIndustry {
+  kind: "industry";
+  key: "industry";
+  label: string;
+  options: string[];
+  required: boolean;
+}
+
+export interface SplashConfigOnboardingFieldShortText {
+  kind: "shortText";
+  key: string;
+  label: string;
+  required: boolean;
+  maxLength: number;
+}
+
+export type SplashConfigOnboardingField =
+  | SplashConfigOnboardingFieldBudget
+  | SplashConfigOnboardingFieldIndustry
+  | SplashConfigOnboardingFieldShortText;
+
+export interface SplashConfig {
+  fields: SplashConfigOnboardingField[];
+}
+
 export interface SessionInfo {
   sessionId: string;
   displayName: string;
@@ -60,11 +92,17 @@ export interface SessionInfo {
    */
   kickoffCompletedAt: string | null;
   /**
-   * Visitor's captured budget in integer cents (e.g. 100_000 for $1,000.00).
-   * `null` before onboarding completes. Integer math end-to-end — no float
-   * weirdness on the wire, in DynamoDB, or at display time.
+   * Server-driven splash configuration for this agent's onboarding step, or
+   * `null` if the agent requires no onboarding. When `null`, the embed skips
+   * the splash entirely and proceeds directly to hydrate/kickoff/chat.
    */
-  budgetCents: number | null;
+  splash: SplashConfig | null;
+  /**
+   * Arbitrary key→value map collected during onboarding, keyed by each field's
+   * `key` from `SplashConfig.fields`. `null` before onboarding completes (or
+   * when the agent has no splash).
+   */
+  onboardingData: Record<string, unknown> | null;
 }
 
 export interface CreateSessionRequest {
@@ -82,8 +120,8 @@ export interface CreateSessionRequest {
 export type CreateSessionResponse = SessionInfo;
 
 export interface OnboardingRequest {
-  /** Budget in integer cents (e.g. 100_000 for $1,000.00). */
-  budgetCents: number;
+  /** Arbitrary map of field keys to collected values, as defined by the agent's SplashConfig. */
+  onboardingData: Record<string, unknown>;
 }
 
 export type OnboardingResponse = SessionInfo;

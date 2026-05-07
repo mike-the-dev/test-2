@@ -17,14 +17,16 @@ import {
 } from "@/lib/api";
 import { readStoredSessionId, writeStoredSessionId } from "@/lib/session-id";
 import { dedupeToolOutputsWithinTurn } from "@/lib/tool-renderers";
-import type { ChatMessage, SessionInfo } from "@/types/chat";
+import type { ChatMessage, SessionInfo, SplashConfigOnboardingFieldBudget } from "@/types/chat";
 
 /**
  * Server-authoritative state machine for the embedded chat flow:
  *
  * - ``loading`` — waiting on the initial ``POST /chat/web/sessions`` round-trip.
- * - ``splash`` — session is created but ``onboardingCompletedAt`` is null;
- *   visitor needs to pick a budget before the agent has enough context.
+ * - ``splash`` — session is created, splash config is non-null, and
+ *   ``onboardingCompletedAt`` is null; visitor needs to fill out the splash
+ *   before the agent has enough context. Carries the budget field extracted
+ *   from ``session.splash``.
  * - ``hydrating`` — onboarded session found; fetching prior turns before
  *   handing control to ``ChatPanel``.
  * - ``kickoff`` — post-onboarding; waiting on the ``__SESSION_KICKOFF__``
@@ -35,7 +37,7 @@ import type { ChatMessage, SessionInfo } from "@/types/chat";
  */
 type EmbedState =
   | { status: "loading" }
-  | { status: "splash"; session: SessionInfo }
+  | { status: "splash"; session: SessionInfo; budgetField: SplashConfigOnboardingFieldBudget }
   | { status: "hydrating"; session: SessionInfo }
   | { status: "kickoff"; session: SessionInfo }
   | {
@@ -62,12 +64,15 @@ export interface EmbedClientProps {
 /**
  * @author mike-the-dev (Michael Camacho)
  * @editor mike-the-dev (Michael Camacho)
- * @lastUpdated 2026-04-30
+ * @lastUpdated 2026-05-07
  * @name EmbedClient
  * @description Client component that drives the 5-state embedded chat machine
  *   (loading → splash | hydrating → chat | error). Receives pre-validated
  *   props from the parent Server Component instead of reading search params
- *   directly, so no Suspense boundary is required.
+ *   directly, so no Suspense boundary is required. Splash rendering is
+ *   server-driven: the session-create response carries a `splash` config
+ *   (`null` for agents with no onboarding). The embed skips the splash when
+ *   `splash === null` OR when `onboardingCompletedAt !== null` (resumed session).
  * @param agent - The agent name to use for the chat session.
  * @param accountUlid - The account ID for session creation.
  * @returns The appropriate UI for the current state.
@@ -78,7 +83,81 @@ export const EmbedClient = ({
 }: EmbedClientProps): ReactElement => {
   const [state, setState] = useState<EmbedState>({ status: "loading" });
   const [attempt, setAttempt] = useState<number>(0);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  /**
+   * Shared post-onboarding sequence: hydrate history, fire kickoff if needed,
+   * then transition to chat. Used by both the initial-load resumed path and
+   * the post-splash-submit path.
+   *
+   * @param session - The fully-onboarded session to hydrate.
+   * @param signal - AbortSignal from the active controller.
+   */
+  const hydrateAndKickoff = useCallback(async (
+    session: SessionInfo,
+    signal: AbortSignal
+  ): Promise<void> => {
+    setState({ status: "hydrating", session });
+
+    let hydratedMessages: ChatMessage[] = [];
+    try {
+      const { messages } = await fetchSessionMessages(
+        session.sessionId,
+        { signal }
+      );
+      if (signal.aborted) return;
+      const visibleMessages = messages.filter(
+        (message) =>
+          !(message.role === "user" && message.content === SESSION_KICKOFF_CONTENT)
+      );
+      hydratedMessages = visibleMessages.map((message) => {
+        return { id: message.id, role: message.role, content: message.content };
+      });
+    } catch (err) {
+      if (signal.aborted) return;
+      console.error("[instapaytient] history hydrate failed", {
+        status: err instanceof ChatApiError ? err.status : "unknown",
+      });
+    }
+
+    if (session.kickoffCompletedAt === null) {
+      setState({ status: "kickoff", session });
+      try {
+        const response = await sendMessage(
+          { sessionId: session.sessionId, message: SESSION_KICKOFF_CONTENT },
+          { signal }
+        );
+        if (signal.aborted) return;
+        const deduped =
+          response.toolOutputs !== undefined
+            ? dedupeToolOutputsWithinTurn(response.toolOutputs)
+            : undefined;
+        const greeting: ChatMessage = {
+          id: ulid(),
+          role: "assistant",
+          content: response.reply,
+          ...(deduped !== undefined && deduped.length > 0
+            ? { toolOutputs: deduped }
+            : {}),
+        };
+        setState({
+          status: "chat",
+          session,
+          initialMessages: [greeting, ...hydratedMessages],
+        });
+      } catch (err) {
+        if (signal.aborted) return;
+        console.error("[instapaytient] kickoff failed", {
+          status: err instanceof ChatApiError ? err.status : "unknown",
+        });
+        setState({ status: "chat", session, initialMessages: hydratedMessages });
+      }
+      return;
+    }
+
+    setState({ status: "chat", session, initialMessages: hydratedMessages });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,6 +167,7 @@ export const EmbedClient = ({
     abortRef.current = controller;
 
     setState({ status: "loading" });
+    setSubmitError(null);
 
     console.debug("[instapaytient] session create", { agent });
 
@@ -104,76 +184,23 @@ export const EmbedClient = ({
 
         writeStoredSessionId(session.sessionId);
 
-        if (session.onboardingCompletedAt) {
-          setState({ status: "hydrating", session });
-
-          let hydratedMessages: ChatMessage[] = [];
-          try {
-            const { messages } = await fetchSessionMessages(
-              session.sessionId,
-              { signal: controller.signal }
-            );
-            if (cancelled || controller.signal.aborted) return;
-            hydratedMessages = messages
-              .filter(
-                (message) =>
-                  !(
-                    message.role === "user" &&
-                    message.content === SESSION_KICKOFF_CONTENT
-                  )
-              )
-              .map((message) => ({
-                id: message.id,
-                role: message.role,
-                content: message.content,
-              }));
-          } catch (err) {
-            if (cancelled || controller.signal.aborted) return;
-            console.error("[instapaytient] history hydrate failed", {
-              status: err instanceof ChatApiError ? err.status : "unknown",
-            });
-          }
-
-          if (session.kickoffCompletedAt === null) {
-            setState({ status: "kickoff", session });
-            try {
-              const response = await sendMessage(
-                { sessionId: session.sessionId, message: SESSION_KICKOFF_CONTENT },
-                { signal: controller.signal }
-              );
-              if (cancelled || controller.signal.aborted) return;
-              const deduped =
-                response.toolOutputs !== undefined
-                  ? dedupeToolOutputsWithinTurn(response.toolOutputs)
-                  : undefined;
-              const greeting: ChatMessage = {
-                id: ulid(),
-                role: "assistant",
-                content: response.reply,
-                ...(deduped !== undefined && deduped.length > 0
-                  ? { toolOutputs: deduped }
-                  : {}),
-              };
-              setState({
-                status: "chat",
-                session,
-                initialMessages: [greeting, ...hydratedMessages],
-              });
-            } catch (err) {
-              if (cancelled || controller.signal.aborted) return;
-              console.error("[instapaytient] kickoff failed (returning visitor)", {
-                status: err instanceof ChatApiError ? err.status : "unknown",
-              });
-              setState({ status: "chat", session, initialMessages: hydratedMessages });
-            }
-            return;
-          }
-
-          setState({ status: "chat", session, initialMessages: hydratedMessages });
+        if (session.splash === null || session.onboardingCompletedAt !== null) {
+          await hydrateAndKickoff(session, controller.signal);
           return;
         }
 
-        setState({ status: "splash", session });
+        const foundField = session.splash.fields.find((field) => field.kind === "budget");
+
+        if (foundField === undefined || foundField.kind !== "budget") {
+          console.error(
+            "[instapaytient] splash config has no budget field — add a renderer for this agent",
+            { splash: session.splash }
+          );
+          setState({ status: "error", message: "We couldn't load this experience." });
+          return;
+        }
+
+        setState({ status: "splash", session, budgetField: foundField });
       } catch (err) {
         if (cancelled || controller.signal.aborted) return;
         console.error("[instapaytient] session create failed", {
@@ -189,90 +216,79 @@ export const EmbedClient = ({
       cancelled = true;
       controller.abort();
     };
-  }, [agent, accountUlid, attempt]);
+  }, [agent, accountUlid, attempt, hydrateAndKickoff]);
 
   const retry = useCallback(() => {
     setAttempt((previousAttempt) => previousAttempt + 1);
   }, []);
 
+  /**
+   * @author mike-the-dev (Michael Camacho)
+   * @editor mike-the-dev (Michael Camacho)
+   * @lastUpdated 2026-05-07
+   * @name handleSplashSubmit
+   * @description Submits the collected onboarding data to the backend, handles
+   *   400 Zod validation errors inline (surfacing the message on the splash
+   *   without transitioning away), and delegates all other errors to the
+   *   full-screen error card. On success, calls `hydrateAndKickoff` to proceed
+   *   to chat. The splash remains mounted throughout the request so a 400 can
+   *   be corrected without rebuilding state.
+   * @param onboardingData - Arbitrary key→value map collected by the splash component.
+   * @returns void
+   */
   const handleSplashSubmit = useCallback(
-    (budgetCents: number): void => {
+    (onboardingData: Record<string, unknown>): void => {
       if (state.status !== "splash") return;
       const { session } = state;
+
+      setSubmitError(null);
+
       const controller = new AbortController();
       abortRef.current?.abort();
       abortRef.current = controller;
 
-      setState({ status: "hydrating", session });
-
       const submitOnboarding = async (): Promise<void> => {
-        // `cancelled` (useEffect scope) is not reachable from this callback; abort relies on `controller.signal`.
         let updated: SessionInfo;
         try {
           updated = await completeOnboarding(
             session.sessionId,
-            { budgetCents },
+            { onboardingData },
             { signal: controller.signal }
           );
         } catch (err) {
           if (controller.signal.aborted) return;
+          if (err instanceof ChatApiError && err.status === 400) {
+            const rawMessage = (err.body as { message?: unknown } | null)?.message;
+            const messageText =
+              typeof rawMessage === "string"
+                ? rawMessage
+                : "Invalid submission. Please check your input.";
+            if (messageText === "this agent has no onboarding") {
+              console.error(
+                "[instapaytient] onboarding called for agent with no onboarding config",
+                { sessionId: session.sessionId }
+              );
+              setState({ status: "error", message: "We couldn't complete setup. Please reload." });
+              return;
+            }
+            setSubmitError(messageText);
+            return;
+          }
           console.error("[instapaytient] onboarding failed", {
             status: err instanceof ChatApiError ? err.status : "unknown",
           });
           setState({ status: "error", message: messageFromApiError(err) });
           return;
         }
+
         if (controller.signal.aborted) return;
 
-        if (updated.kickoffCompletedAt !== null) {
-          setState({ status: "chat", session: updated, initialMessages: [] });
-          return;
-        }
-
-        setState({ status: "kickoff", session: updated });
-
-        try {
-          const response = await sendMessage(
-            {
-              sessionId: updated.sessionId,
-              message: SESSION_KICKOFF_CONTENT,
-            },
-            { signal: controller.signal }
-          );
-          if (controller.signal.aborted) return;
-
-          const deduped =
-            response.toolOutputs !== undefined
-              ? dedupeToolOutputsWithinTurn(response.toolOutputs)
-              : undefined;
-
-          const greeting: ChatMessage = {
-            id: ulid(),
-            role: "assistant",
-            content: response.reply,
-            ...(deduped !== undefined && deduped.length > 0
-              ? { toolOutputs: deduped }
-              : {}),
-          };
-
-          setState({
-            status: "chat",
-            session: updated,
-            initialMessages: [greeting],
-          });
-        } catch (err) {
-          if (controller.signal.aborted) return;
-          console.error("[instapaytient] kickoff failed", {
-            status: err instanceof ChatApiError ? err.status : "unknown",
-          });
-          // Kickoff is a nice-to-have — fall through rather than erroring out.
-          setState({ status: "chat", session: updated, initialMessages: [] });
-        }
+        await hydrateAndKickoff(updated, controller.signal);
       };
 
       void submitOnboarding();
     },
-    [state]
+    [state, hydrateAndKickoff]
   );
 
   if (
@@ -299,7 +315,13 @@ export const EmbedClient = ({
   }
 
   if (state.status === "splash") {
-    return <BudgetSplash onSubmit={handleSplashSubmit} />;
+    return (
+      <BudgetSplash
+        field={state.budgetField}
+        onSubmit={handleSplashSubmit}
+        submitError={submitError}
+      />
+    );
   }
 
   return (

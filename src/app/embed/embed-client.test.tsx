@@ -12,7 +12,7 @@ import {
 
 import { EmbedClient } from "@/app/embed/embed-client";
 import * as api from "@/lib/api";
-import type { SessionInfo } from "@/types/chat";
+import type { SessionInfo, SplashConfig } from "@/types/chat";
 
 vi.mock("@/lib/affirm", () => ({
   loadAffirmSdk: vi.fn(),
@@ -21,6 +21,10 @@ vi.mock("@/lib/affirm", () => ({
 
 const ACCOUNT = "A#01HACCOUNT0000000000000000";
 const SESSION = "01HSESSION00000000000000000";
+
+const validSplash: SplashConfig = {
+  fields: [{ kind: "budget", key: "budgetCents", label: "What's your budget?", required: true }],
+};
 
 describe("EmbedClient", () => {
   let createSessionSpy: MockInstance<typeof api.createSession>;
@@ -33,7 +37,8 @@ describe("EmbedClient", () => {
     displayName: "Shopping Assistant",
     onboardingCompletedAt: null,
     kickoffCompletedAt: null,
-    budgetCents: null,
+    splash: validSplash,
+    onboardingData: null,
     ...overrides,
   });
 
@@ -73,10 +78,151 @@ describe("EmbedClient", () => {
     expect(fetchMessagesSpy).not.toHaveBeenCalled();
   });
 
+  it("skips the splash and goes straight to chat for an agent with splash: null (lead_capture path)", async () => {
+    createSessionSpy.mockResolvedValue(
+      makeSession({ splash: null, onboardingData: null, onboardingCompletedAt: null, kickoffCompletedAt: "2026-04-20T12:00:05.000Z" })
+    );
+    fetchMessagesSpy.mockResolvedValue({ messages: [] });
+
+    render(
+      <EmbedClient
+        agent="lead_capture"
+        accountUlid={ACCOUNT}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/type your message/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("budget-splash")).toBeNull();
+    expect(completeOnboardingSpy).not.toHaveBeenCalled();
+  });
+
+  it("renders the budget splash when splash is non-null and onboardingCompletedAt is null", async () => {
+    createSessionSpy.mockResolvedValue(
+      makeSession({ splash: validSplash, onboardingData: null, onboardingCompletedAt: null })
+    );
+
+    render(
+      <EmbedClient
+        agent="shopping_assistant"
+        accountUlid={ACCOUNT}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("budget-splash")).toBeInTheDocument();
+    });
+    expect(fetchMessagesSpy).not.toHaveBeenCalled();
+  });
+
+  it("transitions to the error state when splash has no budget field", async () => {
+    createSessionSpy.mockResolvedValue(
+      makeSession({
+        splash: { fields: [{ kind: "industry", key: "industry", label: "Your industry", options: ["Retail"], required: true }] },
+        onboardingData: null,
+        onboardingCompletedAt: null,
+      })
+    );
+
+    render(
+      <EmbedClient
+        agent="shopping_assistant"
+        accountUlid={ACCOUNT}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-error-card")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("budget-splash")).toBeNull();
+  });
+
+  it("surfaces a 400 Zod error inline on the splash without transitioning to the error state", async () => {
+    createSessionSpy.mockResolvedValue(makeSession());
+    completeOnboardingSpy.mockRejectedValue(
+      new api.ChatApiError("onboarding failed", 400, {
+        message: "Too small: expected number to be >0",
+        error: "Bad Request",
+        statusCode: 400,
+      })
+    );
+
+    const user = userEvent.setup();
+    render(
+      <EmbedClient
+        agent="shopping_assistant"
+        accountUlid={ACCOUNT}
+      />
+    );
+
+    await screen.findByTestId("budget-splash");
+    await user.click(screen.getByRole("button", { name: /start chat/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("splash-submit-error")).toHaveTextContent(
+        "Too small: expected number to be >0"
+      );
+    });
+    // Splash must remain mounted — no transition to error state.
+    expect(screen.getByTestId("budget-splash")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-error-card")).toBeNull();
+  });
+
+  it("transitions to the full-screen error state on a 400 'this agent has no onboarding' body", async () => {
+    createSessionSpy.mockResolvedValue(makeSession());
+    completeOnboardingSpy.mockRejectedValue(
+      new api.ChatApiError("onboarding failed", 400, {
+        message: "this agent has no onboarding",
+        error: "Bad Request",
+        statusCode: 400,
+      })
+    );
+
+    const user = userEvent.setup();
+    render(
+      <EmbedClient
+        agent="shopping_assistant"
+        accountUlid={ACCOUNT}
+      />
+    );
+
+    await screen.findByTestId("budget-splash");
+    await user.click(screen.getByRole("button", { name: /start chat/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-error-card")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("budget-splash")).toBeNull();
+  });
+
+  it("transitions to the error state on 404 from completeOnboarding", async () => {
+    createSessionSpy.mockResolvedValue(makeSession());
+    completeOnboardingSpy.mockRejectedValue(
+      new api.ChatApiError("not found", 404, { error: "Not Found" })
+    );
+
+    const user = userEvent.setup();
+    render(
+      <EmbedClient
+        agent="shopping_assistant"
+        accountUlid={ACCOUNT}
+      />
+    );
+
+    await screen.findByTestId("budget-splash");
+    await user.click(screen.getByRole("button", { name: /start chat/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-error-card")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("budget-splash")).toBeNull();
+  });
+
   it("submitting the splash calls completeOnboarding, fires the kickoff, and seeds the chat with the greeting", async () => {
     createSessionSpy.mockResolvedValue(makeSession());
     completeOnboardingSpy.mockResolvedValue(
-      makeSession({ onboardingCompletedAt: "2026-04-20T12:00:00.000Z", kickoffCompletedAt: null, budgetCents: 100_000 })
+      makeSession({ onboardingCompletedAt: "2026-04-20T12:00:00.000Z", kickoffCompletedAt: null, onboardingData: { budgetCents: 100_000 } })
     );
     sendMessageSpy.mockResolvedValue({
       reply: "Welcome! What can I help you find today?",
@@ -96,7 +242,7 @@ describe("EmbedClient", () => {
     await waitFor(() => {
       expect(completeOnboardingSpy).toHaveBeenCalledWith(
         SESSION,
-        { budgetCents: 100_000 },
+        { onboardingData: { budgetCents: 100_000 } },
         expect.objectContaining({ signal: expect.any(AbortSignal) })
       );
     });
@@ -118,7 +264,7 @@ describe("EmbedClient", () => {
   it("falls back to an empty chat when the kickoff sendMessage fails", async () => {
     createSessionSpy.mockResolvedValue(makeSession());
     completeOnboardingSpy.mockResolvedValue(
-      makeSession({ onboardingCompletedAt: "2026-04-20T12:00:00.000Z", kickoffCompletedAt: null, budgetCents: 100_000 })
+      makeSession({ onboardingCompletedAt: "2026-04-20T12:00:00.000Z", kickoffCompletedAt: null, onboardingData: { budgetCents: 100_000 } })
     );
     sendMessageSpy.mockRejectedValue(
       new api.ChatApiError("kickoff blew up", 500, null)
@@ -144,7 +290,7 @@ describe("EmbedClient", () => {
   it("skips kickoff on first-time path when onboarding response already has kickoffCompletedAt stamped", async () => {
     createSessionSpy.mockResolvedValue(makeSession({ kickoffCompletedAt: null, onboardingCompletedAt: null }));
     completeOnboardingSpy.mockResolvedValue(
-      makeSession({ onboardingCompletedAt: "2026-04-20T12:00:00.000Z", kickoffCompletedAt: "2026-04-20T12:34:56.000Z", budgetCents: 100_000 })
+      makeSession({ onboardingCompletedAt: "2026-04-20T12:00:00.000Z", kickoffCompletedAt: "2026-04-20T12:34:56.000Z", onboardingData: { budgetCents: 100_000 } })
     );
 
     const user = userEvent.setup();
@@ -167,7 +313,7 @@ describe("EmbedClient", () => {
 
   it("skips kickoff on returning-visitor path when session-create response has kickoffCompletedAt stamped", async () => {
     createSessionSpy.mockResolvedValue(
-      makeSession({ onboardingCompletedAt: "2026-04-19T10:00:00.000Z", kickoffCompletedAt: "2026-04-19T10:00:05.000Z", budgetCents: 100_000 })
+      makeSession({ onboardingCompletedAt: "2026-04-19T10:00:00.000Z", kickoffCompletedAt: "2026-04-19T10:00:05.000Z", onboardingData: { budgetCents: 100_000 } })
     );
     fetchMessagesSpy.mockResolvedValue({
       messages: [
@@ -206,7 +352,7 @@ describe("EmbedClient", () => {
 
   it("dispatches kickoff on returning-visitor path when kickoffCompletedAt is null", async () => {
     createSessionSpy.mockResolvedValue(
-      makeSession({ onboardingCompletedAt: "2026-04-19T10:00:00.000Z", kickoffCompletedAt: null, budgetCents: 100_000 })
+      makeSession({ onboardingCompletedAt: "2026-04-19T10:00:00.000Z", kickoffCompletedAt: null, onboardingData: { budgetCents: 100_000 } })
     );
     fetchMessagesSpy.mockResolvedValue({
       messages: [
@@ -249,7 +395,7 @@ describe("EmbedClient", () => {
 
   it("falls back to hydrated history when returning-visitor kickoff fails", async () => {
     createSessionSpy.mockResolvedValue(
-      makeSession({ onboardingCompletedAt: "2026-04-19T10:00:00.000Z", kickoffCompletedAt: null, budgetCents: 100_000 })
+      makeSession({ onboardingCompletedAt: "2026-04-19T10:00:00.000Z", kickoffCompletedAt: null, onboardingData: { budgetCents: 100_000 } })
     );
     fetchMessagesSpy.mockResolvedValue({
       messages: [
@@ -282,7 +428,7 @@ describe("EmbedClient", () => {
 
   it("hydrates prior messages and skips the splash for an already-onboarded session", async () => {
     createSessionSpy.mockResolvedValue(
-      makeSession({ onboardingCompletedAt: "2026-04-19T10:00:00.000Z", kickoffCompletedAt: "2026-04-19T10:00:05.000Z", budgetCents: 150_000 })
+      makeSession({ onboardingCompletedAt: "2026-04-19T10:00:00.000Z", kickoffCompletedAt: "2026-04-19T10:00:05.000Z", onboardingData: { budgetCents: 150_000 } })
     );
     fetchMessagesSpy.mockResolvedValue({
       messages: [
@@ -327,7 +473,7 @@ describe("EmbedClient", () => {
 
   it("filters __SESSION_KICKOFF__ user turns out of hydrated history", async () => {
     createSessionSpy.mockResolvedValue(
-      makeSession({ onboardingCompletedAt: "2026-04-19T10:00:00.000Z", kickoffCompletedAt: "2026-04-19T10:00:05.000Z", budgetCents: 150_000 })
+      makeSession({ onboardingCompletedAt: "2026-04-19T10:00:00.000Z", kickoffCompletedAt: "2026-04-19T10:00:05.000Z", onboardingData: { budgetCents: 150_000 } })
     );
     fetchMessagesSpy.mockResolvedValue({
       messages: [
@@ -363,7 +509,7 @@ describe("EmbedClient", () => {
 
   it("falls back to an empty chat when hydration fails for an onboarded session", async () => {
     createSessionSpy.mockResolvedValue(
-      makeSession({ onboardingCompletedAt: "2026-04-19T10:00:00.000Z", kickoffCompletedAt: "2026-04-19T10:00:05.000Z", budgetCents: 150_000 })
+      makeSession({ onboardingCompletedAt: "2026-04-19T10:00:00.000Z", kickoffCompletedAt: "2026-04-19T10:00:05.000Z", onboardingData: { budgetCents: 150_000 } })
     );
     fetchMessagesSpy.mockRejectedValue(
       new api.ChatApiError("history unavailable", 500, null)

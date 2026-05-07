@@ -19,7 +19,8 @@ const session = {
   displayName: "Shopping Assistant",
   onboardingCompletedAt: "2026-04-20T12:00:00.000Z",
   kickoffCompletedAt: "2026-04-20T12:00:05.000Z",
-  budgetCents: 100_000,
+  splash: null,
+  onboardingData: { budgetCents: 100_000 },
 };
 
 describe("ChatPanel", () => {

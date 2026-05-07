@@ -79,7 +79,8 @@ describe("api client", () => {
           displayName: "Shopping Assistant",
           onboardingCompletedAt: null,
           kickoffCompletedAt: null,
-          budgetCents: null,
+          splash: null,
+          onboardingData: null,
         },
       });
 
@@ -93,7 +94,8 @@ describe("api client", () => {
         displayName: "Shopping Assistant",
         onboardingCompletedAt: null,
         kickoffCompletedAt: null,
-        budgetCents: null,
+        splash: null,
+        onboardingData: null,
       });
 
       const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
@@ -119,7 +121,8 @@ describe("api client", () => {
           displayName: "Shopping Assistant",
           onboardingCompletedAt: null,
           kickoffCompletedAt: null,
-          budgetCents: null,
+          splash: null,
+          onboardingData: null,
         },
       });
 
@@ -145,7 +148,8 @@ describe("api client", () => {
           displayName: "Shopping Assistant",
           onboardingCompletedAt: null,
           kickoffCompletedAt: null,
-          budgetCents: null,
+          splash: null,
+          onboardingData: null,
         },
       });
 
@@ -170,7 +174,8 @@ describe("api client", () => {
         displayName: "Shopping Assistant",
         onboardingCompletedAt: null,
         kickoffCompletedAt: null,
-        budgetCents: null,
+        splash: null,
+        onboardingData: null,
       };
 
       mockFetchSequence([
@@ -254,7 +259,7 @@ describe("api client", () => {
     });
   });
 
-  it("completeOnboarding posts to the session's onboarding endpoint with cents body and returns the updated session", async () => {
+  it("completeOnboarding posts to the session's onboarding endpoint with onboardingData body and returns the updated session", async () => {
     mockFetchOnce({
       ok: true,
       status: 200,
@@ -263,12 +268,13 @@ describe("api client", () => {
         displayName: "Shopping Assistant",
         onboardingCompletedAt: "2026-04-20T12:00:00.000Z",
         kickoffCompletedAt: null,
-        budgetCents: 150_000,
+        splash: null,
+        onboardingData: { budgetCents: 150_000 },
       },
     });
 
     const result = await completeOnboarding("01HSESSION0001", {
-      budgetCents: 150_000,
+      onboardingData: { budgetCents: 150_000 },
     });
 
     expect(result).toEqual({
@@ -276,7 +282,8 @@ describe("api client", () => {
       displayName: "Shopping Assistant",
       onboardingCompletedAt: "2026-04-20T12:00:00.000Z",
       kickoffCompletedAt: null,
-      budgetCents: 150_000,
+      splash: null,
+      onboardingData: { budgetCents: 150_000 },
     });
 
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
@@ -285,7 +292,7 @@ describe("api client", () => {
       "http://localhost:8081/chat/web/sessions/01HSESSION0001/onboarding"
     );
     expect(init.method).toBe("POST");
-    expect(init.body).toBe(JSON.stringify({ budgetCents: 150_000 }));
+    expect(init.body).toBe(JSON.stringify({ onboardingData: { budgetCents: 150_000 } }));
   });
 
   it("fetchSessionMessages GETs the session's messages endpoint and returns the filtered history", async () => {

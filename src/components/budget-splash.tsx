@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { AffirmPromo } from "@/components/affirm-promo";
 import { PaymentEstimates } from "@/components/payment-estimates";
 import { useDebounce } from "@/lib/use-debounce";
+import type { SplashConfigOnboardingFieldBudget } from "@/types/chat";
 
 export const MINIMUM_BUDGET_DOLLARS = 50;
 /**
@@ -21,13 +22,25 @@ export const MAX_FINANCEABLE_DOLLARS = 30_000;
 const DEFAULT_BUDGET_DOLLARS = 1000;
 const LIVE_UPDATE_DEBOUNCE_MS = 400;
 
+/**
+ * @author mike-the-dev (Michael Camacho)
+ * @editor mike-the-dev (Michael Camacho)
+ * @lastUpdated 2026-05-07
+ * @name BudgetSplashProps
+ * @description Props for the BudgetSplash onboarding component.
+ * @param field - The server-driven budget field config from the agent's SplashConfig.
+ *   `field.label` drives the question text; `field.key` is used to key the
+ *   submission payload; `field.required` gates the submit button.
+ * @param onSubmit - Called with the full onboarding data map on submit.
+ *   When `field.required` is false and the input is empty, called with `{}`.
+ * @param submitError - Optional inline error message to render above the submit
+ *   button (e.g. a 400 Zod validation message from the backend). When falsy,
+ *   no error is shown.
+ */
 export interface BudgetSplashProps {
-  /**
-   * Called with the validated budget in integer cents (e.g. 100_000 for
-   * $1,000.00) when the user submits. The backend's onboarding endpoint
-   * also speaks cents — we keep integer math end-to-end across the wire.
-   */
-  onSubmit: (budgetCents: number) => void;
+  field: SplashConfigOnboardingFieldBudget;
+  onSubmit: (onboardingData: Record<string, unknown>) => void;
+  submitError?: string | null;
 }
 
 function parseDollarInput(raw: string): number {
@@ -38,7 +51,23 @@ function parseDollarInput(raw: string): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-export function BudgetSplash({ onSubmit }: BudgetSplashProps): ReactElement {
+/**
+ * @author mike-the-dev (Michael Camacho)
+ * @editor mike-the-dev (Michael Camacho)
+ * @lastUpdated 2026-05-07
+ * @name BudgetSplash
+ * @description Onboarding splash for agents that require a budget field.
+ *   Renders a dollar-amount input with Affirm promo and payment estimates,
+ *   and calls `onSubmit` with the collected onboarding data map on submit.
+ *   The question text (`field.label`) and payload key (`field.key`) are
+ *   driven by the server-supplied `SplashConfigOnboardingFieldBudget`, making
+ *   per-agent customization possible without changing this component.
+ * @param field - Budget field config from the agent's SplashConfig.
+ * @param onSubmit - Callback receiving the full `onboardingData` map.
+ * @param submitError - Optional inline error string from a failed onboarding attempt.
+ * @returns The budget splash form element.
+ */
+export function BudgetSplash({ field, onSubmit, submitError }: BudgetSplashProps): ReactElement {
   const [raw, setRaw] = useState<string>(String(DEFAULT_BUDGET_DOLLARS));
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -65,8 +94,13 @@ export function BudgetSplash({ onSubmit }: BudgetSplashProps): ReactElement {
 
   const handleSubmit = (e: FormEvent<HTMLFormElement>): void => {
     e.preventDefault();
+    if (field.required && !isValid) return;
+    if (!field.required && amount === 0) {
+      onSubmit({});
+      return;
+    }
     if (!isValid) return;
-    onSubmit(Math.round(amount * 100));
+    onSubmit({ [field.key]: Math.round(amount * 100) });
   };
 
   return (
@@ -94,7 +128,7 @@ export function BudgetSplash({ onSubmit }: BudgetSplashProps): ReactElement {
       >
         <div className="text-center">
           <h2 className="text-lg font-semibold text-foreground">
-            What&apos;s your budget?
+            {field.label}
           </h2>
           <p className="mt-1 text-xs text-default-foreground opacity-70">
             Tell us a ballpark and we&apos;ll show options that fit.
@@ -152,10 +186,16 @@ export function BudgetSplash({ onSubmit }: BudgetSplashProps): ReactElement {
           </p>
         )}
 
+        {submitError ? (
+          <p role="alert" className="text-center text-xs text-danger" data-testid="splash-submit-error">
+            {submitError}
+          </p>
+        ) : null}
+
         <Button
           type="submit"
           variant="primary"
-          isDisabled={!isValid}
+          isDisabled={field.required ? !isValid : false}
           fullWidth
           className="max-w-[240px]"
         >
